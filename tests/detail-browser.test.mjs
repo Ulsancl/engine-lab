@@ -28,7 +28,15 @@ async function check(name, action) {
 }
 async function capture(name, sceneOnly = false) {
   await page.clock.runFor(80);
-  if (sceneOnly) await page.locator('#scene').screenshot({ path: path.join(output, `${name}.png`) });
+  if (sceneOnly) {
+    // The paused test clock cannot supply RAFs for locator screenshot stability.
+    // Scroll explicitly and capture the rendered, finite scene rectangle instead.
+    await page.locator('#scene').evaluate(node => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await page.clock.runFor(80);
+    const clip = await page.locator('#scene').boundingBox();
+    assert.ok(clip && clip.width > 0 && clip.height > 0);
+    await page.screenshot({ path: path.join(output, `${name}.png`), clip });
+  }
   else await page.screenshot({ path: path.join(output, `${name}.png`), fullPage: true });
 }
 
