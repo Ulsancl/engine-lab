@@ -1,0 +1,7 @@
+UNLICENSED
+
+Engine Lab application source is not distributed under an open source license.
+All rights reserved.
+
+Third-party components retain their respective licenses.
+See docs/THIRD-PARTY-NOTICES.md and the notices bundled with the application.
