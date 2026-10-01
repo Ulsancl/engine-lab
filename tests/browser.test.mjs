@@ -115,6 +115,15 @@ try {
     await page.clock.runFor(200); assert.equal((await state()).angleRad, stopped.angleRad);
     await page.locator('#rpm').focus(); await page.keyboard.press('Space'); assert.equal((await state()).running, false);
   });
+  await check('compact windows retain the visible disassembly spacing control', async () => {
+    await page.setViewportSize({ width: 1024, height: 768 }); await page.clock.runFor(100);
+    await page.locator('[data-mode="exploded"]').click();
+    assert.equal(await page.locator('#explode').isVisible(), true);
+    await page.locator('#explode').fill('0.42');
+    assert.equal((await state()).view.explode, .42);
+    await page.screenshot({ path: path.join(output, 'compact-disassembly.png'), fullPage: true });
+    await page.setViewportSize({ width: 1600, height: 1100 }); await page.clock.runFor(100);
+  });
   await check('file download and reopen preserve the complete settings, view, angle and camera', async () => {
     await page.clock.runFor(300); const original = await project();
     const downloadEvent = page.waitForEvent('download'); await page.locator('#save-project').click(); const download = await downloadEvent;
