@@ -22,29 +22,63 @@ const angle = degrees => page.evaluate(value => window.engineLab.setAngle(value)
 const range = (selector, value) => page.locator(selector).evaluate((input, value) => { input.value = String(value); input.dispatchEvent(new Event('input', { bubbles: true })); }, value);
 const select = id => page.locator('#part-select').selectOption(id);
 const facts = (focus = false) => page.locator(focus ? '#focus-detail-facts .detail-fact' : '#part-detail-facts .detail-fact').evaluateAll(nodes => Object.fromEntries(nodes.map(node => [node.dataset.label, { value: node.dataset.value, unit: node.dataset.unit, text: node.querySelector('dd').textContent.trim() }])));
+const rendering = () => page.evaluate(() => {
+  const canvas = document.querySelector('#scene canvas'), gl = canvas?.getContext('webgl2'), info = gl?.getExtension('WEBGL_debug_renderer_info');
+  const scene = window.engineLab?.sceneDebug();
+  return { contextLost: gl?.isContextLost() ?? true, renderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl?.getParameter(gl.RENDERER), drawCalls: scene?.drawCalls, triangles: scene?.triangles, canvas: canvas && { width: canvas.width, height: canvas.height } };
+});
 async function check(name, action) {
   try { await action(); checks.push({ name, passed: true }); console.log('PASS ' + name); }
-  catch (error) { checks.push({ name, passed: false, error: error.message }); await page?.screenshot({ path: path.join(output, 'failure.png'), fullPage: true }).catch(() => {}); throw error; }
+  catch (error) {
+    checks.push({ name, passed: false, error: error.message });
+    evidence.push({ failureRendering: await rendering().catch(() => null) });
+    // Failure evidence must not repeat a capture with the render clock paused.
+    await page?.clock.resume().catch(() => {});
+    await page?.screenshot({ path: path.join(output, 'failure.png'), fullPage: true, timeout: 5000 }).catch(() => {});
+    throw error;
+  }
 }
 async function capture(name, sceneOnly = false) {
   await page.clock.runFor(80);
-  if (sceneOnly) {
-    // The paused test clock cannot supply RAFs for locator screenshot stability.
-    // Scroll explicitly and capture the rendered, finite scene rectangle instead.
-    await page.locator('#scene').evaluate(node => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
-    await page.clock.runFor(80);
-    const clip = await page.locator('#scene').boundingBox();
-    assert.ok(clip && clip.width > 0 && clip.height > 0);
-    await page.screenshot({ path: path.join(output, `${name}.png`), clip });
+  const before = await state(), saved = await project();
+  assert.equal(before.running, false, 'Capture only a paused simulation; rendering time must not advance engine motion.');
+  // Chromium's screenshot compositor can request a new frame after scrolling.
+  // Keep RAFs available until capture completes instead of pausing them between
+  // the last render and Page.captureScreenshot (intermittent Windows CI hang).
+  await page.clock.resume();
+  try {
+    if (sceneOnly) await page.locator('#scene').evaluate(node => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const rendered = await rendering();
+    assert.equal(rendered.contextLost, false, JSON.stringify(rendered));
+    assert.ok(rendered.drawCalls > 0 && rendered.triangles > 0, JSON.stringify(rendered));
+    const options = { path: path.join(output, `${name}.png`) };
+    if (sceneOnly) {
+      options.clip = await page.locator('#scene').boundingBox();
+      assert.ok(options.clip && options.clip.width > 0 && options.clip.height > 0);
+    } else options.fullPage = true;
+    await page.screenshot(options);
+    assert.equal((await rendering()).contextLost, false);
+    evidence.push({ capture: name, rendering: rendered });
+  } finally {
+    // pauseAt needs a future wall time. A generous horizon also works on slow CI;
+    // fast-forward fires pending UI/save timers once, while the engine is paused.
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 60000));
   }
-  else await page.screenshot({ path: path.join(output, `${name}.png`), fullPage: true });
+  assert.deepEqual(await state(), before, 'Rendering a screenshot must preserve the paused observation.');
+  assert.deepEqual(await project(), saved, 'Rendering a screenshot must preserve the saved project and camera.');
 }
 
 try {
   await mkdir(output, { recursive: true });
   server = await createServer({ root, server: { host: '127.0.0.1', port: 5246, strictPort: true } }); await server.listen();
-  browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-webgl'] });
+  // Match the existing browser suite and let Chromium choose its supported backend.
+  browser = await chromium.launch({ headless: true });
   context = await browser.newContext({ viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 1, acceptDownloads: true });
+  await context.exposeBinding('__reportDetailContextLoss', (_source, message) => errors.push({ kind: 'webgl', message }));
+  await context.addInitScript(() => document.addEventListener('webglcontextlost', event => {
+    window.__reportDetailContextLoss(event.statusMessage || 'WebGL context lost');
+  }, true));
   page = await context.newPage(); page.setDefaultTimeout(30000);
   page.on('pageerror', error => errors.push({ kind: 'page', message: error.message }));
   page.on('console', message => { if (message.type() === 'error') errors.push({ kind: 'console', message: message.text() }); });
@@ -310,6 +344,6 @@ try {
   console.log(`All ${checks.length} engine detail browser checks passed.`);
 } finally {
   await mkdir(output, { recursive: true });
-  await writeFile(path.join(output, 'detail-browser-results.json'), JSON.stringify({ version, checks, passed: checks.filter(check => check.passed).length, failed: checks.filter(check => !check.passed).length, errors, evidence, rendererScope: 'Headless Chromium with SwiftShader; functional and geometry evidence, not a physical GPU performance claim.' }, null, 2));
+  await writeFile(path.join(output, 'detail-browser-results.json'), JSON.stringify({ version, checks, passed: checks.filter(check => check.passed).length, failed: checks.filter(check => !check.passed).length, errors, evidence, rendererScope: 'Headless Chromium with its default backend, recorded per capture; functional and geometry evidence, not a physical GPU performance claim.' }, null, 2));
   await browser?.close(); await server?.close();
 }
