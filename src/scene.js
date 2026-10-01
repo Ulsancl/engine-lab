@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { FIRING_PHASES } from './model.js';
 import { SCENE_DIMENSIONS as D, OIL_PUMP_GEOMETRY, oilCircuitPaths, crankOilPassage, valveGeometry, createCamGeometry, annulus, sprocketGeometry, timingPath, layoutLabels, fitEngineCamera } from './scene-geometry.js';
+import { PISTON_DETAIL, pistonCrownGeometry, pistonSkirtGeometry, beveledPlate, rodBeamGeometry, rodFlangeGeometry, crankCheekGeometry, metalFinishTexture } from './mechanical-geometry.js';
 import './scene.css';
 
 const TAU = Math.PI * 2;
@@ -14,7 +15,7 @@ const STROKES = { power: ['팽창', 0xefb56e], exhaust: ['배기', 0xd88073], in
 export class EngineScene {
   constructor(container, { onSelect = () => {} } = {}) {
     this.container = container; this.onSelect = onSelect; this.view = { ...DEFAULT_VIEW, layers: { ...DEFAULT_VIEW.layers } };
-    this.components = new Map(); this.cylinders = []; this.staticMeshes = []; this.materials = new Set(); this.geometries = new Set(); this.highlighted = []; this.disposed = false;
+    this.components = new Map(); this.cylinders = []; this.staticMeshes = []; this.materials = new Set(); this.geometries = new Set(); this.textures = new Set(); this.highlighted = []; this.disposed = false;
     container.classList.add('engine-scene');
     this.scene = new THREE.Scene(); this.scene.background = new THREE.Color('#18242e'); this.scene.fog = new THREE.Fog('#18242e', 1.7, 4.5);
     this.camera = new THREE.PerspectiveCamera(37, 1, .005, 12);
@@ -47,9 +48,12 @@ export class EngineScene {
 
   material(parameters) { const material = new THREE.MeshStandardMaterial(parameters); this.materials.add(material); return material; }
   createMaterials() {
+    const finish = kind => { const texture = metalFinishTexture(kind); texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy()); this.textures.add(texture); return texture; };
+    const turned = finish('turned'), linear = finish('linear'), cast = finish('cast');
     this.mat = {
-      aluminum: this.material({ color: '#b3bdc3', metalness: .88, roughness: .3 }),
-      cast: this.material({ color: '#737f88', metalness: .72, roughness: .57 }),
+      aluminum: this.material({ color: '#b3bdc3', metalness: .88, roughness: .3, bumpMap: linear, bumpScale: .000035 }),
+      turned: this.material({ color: '#c3cbd0', metalness: .9, roughness: .27, bumpMap: turned, bumpScale: .000035 }),
+      cast: this.material({ color: '#737f88', metalness: .72, roughness: .57, bumpMap: cast, bumpScale: .000085 }),
       steel: this.material({ color: '#9aa9b4', metalness: .96, roughness: .23 }),
       darkSteel: this.material({ color: '#43525b', metalness: .91, roughness: .3 }),
       polished: this.material({ color: '#d4e0e5', metalness: .98, roughness: .15 }),
@@ -128,8 +132,11 @@ export class EngineScene {
       const backWeb = this.box([.053, .078, .021], m.cast, bearing, [-.0405, .060, z]);
       const frontWeb = this.box([.053, .078, .021], m.cast, bearing, [.0405, .060, z]);
       this.bearingSupports.push({ upperBody, backWeb, frontWeb });
-      this.box([.074, .018, .029], m.cast, bearing, [0, -.034, z]);
-      for (const x of [-.03, .03]) this.bolt(bearing, [x, -.022, z]);
+      this.ring(.0254, .036, .029, m.cast, bearing, [0, 0, z], 'z', Math.PI, Math.PI);
+      for (const x of [-.031, .031]) {
+        this.mesh(beveledPlate([[x - .008, -.008], [x + .008, -.008], [x + .008, -.022], [x - .008, -.022]], .029), [m.steel, m.cast], bearing, [0, 0, z]);
+        this.cylinder(.0022, .024, m.darkSteel, bearing, [x, -.012, z]); this.bolt(bearing, [x, -.025, z]);
+      }
     }
     this.cams = {};
     for (const kind of ['intake', 'exhaust']) {
@@ -157,26 +164,35 @@ export class EngineScene {
     const m = this.mat, number = index + 1, z = (index - 1.5) * .104;
     const group = new THREE.Group(); group.name = `cylinder-${number}`; this.root.add(group);
     const piston = this.part(`c${number}-piston`, `${number}번 피스톤`, '알루미늄 피스톤의 왕복 위치는 크랭크 반경과 로드 길이에서 계산합니다. 링과 핀은 각각 밀봉·연결을 담당합니다.', '알루미늄 합금', group, number, [.035, .022, 0], 0);
-    this.cylinder(.0423, .041, m.aluminum, piston, [0, .0035, 0]);
-    this.cylinder(.0424, .004, m.polished, piston, [0, .024, 0]);
-    this.cylinder(.029, .0005, m.cast, piston, [0, .0263, 0]);
+    const pistonBody = this.mesh(pistonCrownGeometry(), [m.turned, m.cast, m.aluminum], piston);
+    for (const phase of [0, Math.PI]) this.mesh(pistonSkirtGeometry(phase - PISTON_DETAIL.skirtArc / 2), [m.turned, m.cast, m.aluminum], piston);
+    for (const bossZ of [-PISTON_DETAIL.pinBossZ, PISTON_DETAIL.pinBossZ]) {
+      this.ring(PISTON_DETAIL.pinBossInnerRadius, PISTON_DETAIL.pinBossOuterRadius, PISTON_DETAIL.pinBossWidth, m.aluminum, piston, [0, 0, bossZ]);
+      // Upper ribs tie the pin bosses into the crown, leaving the pin bore open.
+      for (const sign of [-1, 1]) this.mesh(beveledPlate([[sign * .010, .009], [sign * .020, .022], [sign * .007, .022], [sign * .004, .014]], .010, .0004), [m.aluminum, m.cast], piston, [0, 0, bossZ]);
+    }
     const rings = this.part(`c${number}-rings`, `${number}번 피스톤 링`, '두 압축 링과 오일 제어 링을 대표합니다. 작은 링 끝 간극을 두어 피스톤 둘레의 별도 부품으로 표시했습니다.', '합금 주철 · 강철', piston, number, [.041, .015, 0], 13);
-    for (const [y, width] of [[.018, .0015], [.013, .0015], [.007, .0027]]) this.ring(.0418, .0428, width, m.darkSteel, rings, [0, y, 0], 'y', .05, TAU - .10);
+    for (const ring of PISTON_DETAIL.rings) this.ring(.0418, .0428, ring.width, m.darkSteel, rings, [0, ring.y, 0], 'y', ring.phase + ring.gapAngle / 2, TAU - ring.gapAngle);
     const pin = this.part(`c${number}-pin`, `${number}번 피스톤 핀`, '피스톤과 로드 작은 끝을 연결하는 중공 강철 핀입니다.', '경화 강철', piston, number, [0, 0, -.034], 16);
-    this.ring(.007, .010, .074, m.polished, pin, [0, 0, 0]);
+    const pinMesh = this.ring(.007, .010, .074, m.polished, pin, [0, 0, 0]);
     const rod = this.part(`c${number}-rod`, `${number}번 커넥팅로드`, '큰 끝과 작은 끝의 중심 사이 길이는 143 mm로 고정됩니다. 핀 두 위치를 연결해 움직입니다.', '단조 강철', group, number, [0, .070, 0], 1);
-    this.ring(.0103, .016, .014, m.steel, rod, [0, .143, 0]);
-    this.ring(.014, .024, .020, m.steel, rod, [0, 0, 0]);
-    this.ring(.0134, .0141, .018, m.bronze, rod, [0, 0, 0]);
-    this.box([.013, .103, .008], m.darkSteel, rod, [0, .077, 0]);
-    for (const zz of [-.005, .005]) this.box([.021, .107, .003], m.steel, rod, [0, .077, zz]);
-    for (const xx of [-.021, .021]) this.bolt(rod, [xx, -.009, 0], 'y', .8);
+    const rodSmallEnd = this.ring(.0103, .016, .014, m.steel, rod, [0, .143, 0]);
+    this.ring(.0101, .0112, .0142, m.bronze, rod, [0, .143, 0]);
+    // Distinct cap halves expose the split plane and retain a continuous journal
+    // passage. The brass shell spans the split without changing the 143 mm centres.
+    this.ring(.014, .024, .020, m.steel, rod, [0, 0, 0], 'z', .006, Math.PI - .012);
+    this.ring(.014, .024, .020, m.darkSteel, rod, [0, 0, 0], 'z', Math.PI + .006, Math.PI - .012);
+    const rodBigEnd = this.ring(.0134, .0141, .018, m.bronze, rod, [0, 0, 0]);
+    this.mesh(rodBeamGeometry(), [m.steel, m.darkSteel], rod);
+    for (const zz of [-.0044, .0044]) this.mesh(rodFlangeGeometry(), [m.steel, m.darkSteel], rod, [0, 0, zz]);
+    for (const xx of [-.022, .022]) {
+      this.mesh(beveledPlate([[xx - .004, -.009], [xx + .004, -.009], [xx + .004, .008], [xx - .004, .008]], .016, .0004), [m.steel, m.darkSteel], rod);
+      this.cylinder(.0019, .023, m.polished, rod, [xx, .001, 0]); this.bolt(rod, [xx, -.012, 0], 'y', .8);
+    }
     const crankThrow = new THREE.Group(); crankThrow.rotation.z = FIRING_PHASES[index]; this.crankRotating.add(crankThrow);
-    this.cylinder(.0133, .026, m.polished, crankThrow, [0, .043, z], 'z');
+    const crankPinMesh = this.cylinder(.0133, .026, m.polished, crankThrow, [0, .043, z], 'z');
     for (const zz of [z - .021, z + .021]) {
-      this.box([.035, .059, .014], m.darkSteel, crankThrow, [0, .020, zz]);
-      this.cylinder(.027, .014, m.steel, crankThrow, [0, -.023, zz], 'z', 40);
-      this.cylinder(.019, .014, m.steel, crankThrow, [0, .042, zz], 'z', 40);
+      this.mesh(crankCheekGeometry(), [m.steel, m.darkSteel], crankThrow, [0, 0, zz]);
     }
     const crankOil = this.tube(crankOilPassage(index), .00135, m.oil, crankThrow, false).mesh; crankOil.userData.partId = 'oil-gallery'; crankOil.renderOrder = 4;
     const liner = this.part(`c${number}-liner`, `${number}번 실린더 라이너`, '피스톤이 왕복하는 원통면입니다. 절개에서는 절반을 제거하고 절단면을 밝게 표시합니다.', '내마모 주철', group, number, [-.043, .168, z], 14);
@@ -216,7 +232,7 @@ export class EngineScene {
     const flash = this.mesh(new THREE.SphereGeometry(.008, 16, 12), flashMaterial, spark, [0, .218, z]);
     const gasMaterial = this.material({ color: '#69cbd5', emissive: '#69cbd5', emissiveIntensity: .08, transparent: true, opacity: .055, depthWrite: false, side: THREE.DoubleSide });
     const gas = this.mesh(new THREE.CylinderGeometry(.0405, .0405, 1, 40), gasMaterial, group, [0, .2, z]); gas.castShadow = false;
-    this.cylinders.push({ number, z, group, piston, rings, pin, rod, liner, linerFull, linerCut, valves, spark, flash, gas, headRingFull, headRingCut, crankThrow, crankOil });
+    this.cylinders.push({ number, z, group, piston, pistonBody, rings, pin, pinMesh, rod, rodSmallEnd, rodBigEnd, crankPinMesh, liner, linerFull, linerCut, valves, spark, flash, gas, headRingFull, headRingCut, crankThrow, crankOil });
   }
 
   buildTiming() {
@@ -304,10 +320,11 @@ export class EngineScene {
   }
 
   buildStage() {
+    this.stage = new THREE.Group(); this.scene.add(this.stage);
     const material = this.material({ color: '#1d2c36', metalness: .28, roughness: .68 });
-    this.floor = this.mesh(new THREE.PlaneGeometry(12, 12), material, this.scene, [0, -.133, 0]); this.floor.rotation.x = -Math.PI / 2; this.floor.castShadow = false;
-    const platform = this.mesh(new THREE.CylinderGeometry(.37, .385, .017, 96), this.material({ color: '#2b3b45', metalness: .65, roughness: .47 }), this.scene, [0, -.122, 0]); platform.receiveShadow = true;
-    this.ring(.361, .363, .0008, this.mat.darkSteel, this.scene, [0, -.113, 0], 'y');
+    this.floor = this.mesh(new THREE.PlaneGeometry(12, 12), material, this.stage, [0, -.133, 0]); this.floor.rotation.x = -Math.PI / 2; this.floor.castShadow = false;
+    const platform = this.mesh(new THREE.CylinderGeometry(.37, .385, .017, 96), this.material({ color: '#2b3b45', metalness: .65, roughness: .47 }), this.stage, [0, -.122, 0]); platform.receiveShadow = true;
+    this.ring(.361, .363, .0008, this.mat.darkSteel, this.stage, [0, -.113, 0], 'y');
     this.standFeet = [];
     for (const end of [-1, 1]) for (const x of [-.057, .057]) { const mesh = this.box([.027, .031, .033], this.mat.black, this.root, [x, -.106, end * .155]); this.standFeet.push({ mesh, end }); }
   }
@@ -328,6 +345,7 @@ export class EngineScene {
 
   update(snapshot, view = {}) {
     if (this.disposed || !snapshot) return;
+    this.restoreVisibilityMask();
     this.snapshot = snapshot; const previousMode = this.view.cylinderMode;
     this.view = { ...DEFAULT_VIEW, ...view, layers: { ...DEFAULT_VIEW.layers, ...view.layers } };
     const v = this.view, selectedCylinder = clamp(Number(v.selectedCylinder) || 1, 1, 4), single = v.cylinderMode === 'single', cut = v.mode !== 'assembled', exploded = v.mode === 'exploded' ? clamp(Number(v.explode) || 0, 0, 1) : 0;
@@ -405,7 +423,72 @@ export class EngineScene {
     this.status.textContent = `${single ? `${selectedCylinder}번 확대` : '직렬 4기통'} · ${selectedCylinder}번 ${STROKES[current?.stroke]?.[0] || ''} · ${Math.round(phase * 180 / Math.PI)}°`;
     this.note.hidden = !exploded && !v.layers.lubrication;
     this.note.textContent = exploded && v.layers.lubrication ? '분해 위치는 관찰용 · 금색은 조립 상태의 내부 오일 경로' : exploded ? '분해 위치는 관찰용 · 조립 상태에서 캠 접촉 확인' : '금색: 내부 오일 통로 투시 · 대표 연결 · 유량 계산 아님';
+    if (this.inspection) {
+      const component = this.components.get(this.inspection.partId);
+      // Explicit inspection can temporarily reveal a disabled layer. Subsequent
+      // scope changes still honour the user's current cylinder/layer choices.
+      if (this.inspection.scope !== this.inspectionScope() && !this.isVisible(component.node)) this.restoreInspection();
+      else {
+        this.inspection.scope = this.inspectionScope(); this.applyInspectionMask(component);
+        const origin = component.node.getWorldPosition(new THREE.Vector3());
+        if (this.inspection.origin) {
+          const delta = origin.clone().sub(this.inspection.origin); this.camera.position.add(delta); this.controls.target.add(delta);
+        }
+        this.inspection.origin = origin;
+      }
+    }
     this.needsRender = true;
+  }
+
+  inspectionScope() { return JSON.stringify([this.view.cylinderMode, this.view.selectedCylinder, this.view.layers]); }
+  getInspectionState() { return { active: Boolean(this.inspection), partId: this.inspection?.partId ?? null }; }
+  getProjectCameraState() { return this.inspection ? structuredClone(this.inspection.camera) : this.getCameraState(); }
+  restoreVisibilityMask() {
+    if (!this.visibilityMask) return;
+    for (const [node, visible] of this.visibilityMask) node.visible = visible;
+    this.visibilityMask = null;
+  }
+  applyInspectionMask(component) {
+    this.restoreVisibilityMask(); this.visibilityMask = new Map();
+    this.visibilityMask.set(this.stage, this.stage.visible); this.stage.visible = false;
+    const ancestors = new Set(); for (let node = component.node; node; node = node.parent) ancestors.add(node);
+    const descendants = new Set(); component.node.traverse(node => descendants.add(node));
+    this.root.traverse(node => {
+      this.visibilityMask.set(node, node.visible);
+      node.visible = ancestors.has(node) || (descendants.has(node) && node.visible);
+    });
+    this.note.hidden = false;
+    this.note.textContent = /-pin$/.test(component.id) ? '중공 피스톤 핀 · 핀 보스와 로드 작은 끝을 연결하는 대표 형상'
+      : /-rings$/.test(component.id) ? '압축 링 2개·오일 링 1개 · 끝 간극과 링 홈의 대표 형상 · 밀봉 해석 아님'
+      : /piston/.test(component.id) ? '대표 피스톤 구조 · 링 홈·중공 크라운·핀 보스 · 제작 도면 아님'
+      : /rod|crankshaft|bearing/.test(component.id) ? '대표 가공 구조 · 중심 거리와 운동 치수 유지 · 응력·강도 계산 아님'
+      : '선택 부품 확대 · 전체 구조 복귀 시 이전 시점과 현재 표시 설정 적용';
+  }
+  inspectPart(id) {
+    const component = this.components.get(id); if (!component) return false;
+    this.restoreVisibilityMask();
+    if (!this.inspection) this.inspection = { camera: this.getCameraState(), preset: structuredClone(this.lastPresetFit), partId: id, scope: this.inspectionScope() };
+    this.inspection.partId = id; this.inspection.scope = this.inspectionScope(); this.applyInspectionMask(component);
+    this.inspection.origin = component.node.getWorldPosition(new THREE.Vector3());
+    const damping = this.controls.enableDamping; this.controls.enableDamping = false; this.controls.update();
+    const direction = /piston|rings|pin/.test(id) ? new THREE.Vector3(.85, -.48, -.95)
+      : /rod/.test(id) ? new THREE.Vector3(.46, .16, -1) : new THREE.Vector3(.88, .54, -.91);
+    const fit = fitEngineCamera(this.camera, this.root, { aspect: this.width / this.height, direction, fillX: .72, fillY: .7 });
+    if (fit) {
+      this.controls.target.copy(fit.target);
+      // At the orbit distance floor, optical zoom lets small parts fill the view.
+      const span = Math.max(fit.projectedBounds.right - fit.projectedBounds.left, fit.projectedBounds.top - fit.projectedBounds.bottom);
+      if (span > 0 && span < 1.15) this.camera.zoom = Math.min(4, 1.15 / span);
+      this.camera.updateProjectionMatrix(); this.lastPresetFit = { id: 'inspection', distance: fit.distance, projectedBounds: fit.projectedBounds };
+    }
+    this.controls.update(); this.controls.enableDamping = damping; this.needsRender = true; return true;
+  }
+  restoreInspection() {
+    if (!this.inspection) return false;
+    const saved = this.inspection; this.restoreVisibilityMask(); this.inspection = null;
+    this.restoreCameraState(saved.camera); this.lastPresetFit = saved.preset;
+    this.note.hidden = this.view.mode !== 'exploded' && !this.view.layers.lubrication;
+    this.needsRender = true; return true;
   }
 
   highlight(id) {
@@ -424,6 +507,11 @@ export class EngineScene {
     for (const component of this.components.values()) {
       const entry = this.labels.get(component.id); entry.button.hidden = true; entry.line.style.display = 'none';
       if (!this.view.labels || !this.isVisible(component.node)) continue;
+      if (this.inspection) {
+        const inspected = this.components.get(this.inspection.partId).node;
+        let ancestor = component.node; while (ancestor && ancestor !== inspected) ancestor = ancestor.parent;
+        if (!ancestor) continue; // Transform-only parents do not label hidden parts.
+      }
       const selected = component.id === this.view.selectedPart;
       if (component.cylinder && component.cylinder !== this.view.selectedCylinder && !selected) continue;
       if (!selected && component.priority > (width < 650 ? 4 : 8)) continue;
@@ -481,7 +569,12 @@ export class EngineScene {
         contacts.push({ cylinder: cylinder.number, kind, pair: pairIndex, supportErrorM: maximum });
       });
     }
-    return { selectedPart: this.selectedId, camera: this.getCameraState(), lastPresetFit: this.lastPresetFit, visibleCylinderIds: this.cylinders.filter(cylinder => cylinder.group.visible).map(cylinder => cylinder.number), crankRotation: this.crankRotating.rotation.z, pumpDrive: { axis: this.pumpRotor.getWorldPosition(new THREE.Vector3()).toArray(), rotation: this.pumpRotor.rotation.z }, oilCircuitMode: this.oilFlowKey, oilCircuitPaths: this.oilCircuit.map(path => path.id), camContacts: contacts, maxCamSupportErrorM: Math.max(...contacts.map(contact => Math.abs(contact.supportErrorM))), drawCalls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
+    const mechanical = this.cylinders.map(cylinder => {
+      const small = cylinder.rodSmallEnd.getWorldPosition(new THREE.Vector3()), big = cylinder.rodBigEnd.getWorldPosition(new THREE.Vector3());
+      const crown = cylinder.pistonBody.localToWorld(new THREE.Vector3(0, cylinder.pistonBody.geometry.boundingBox.max.y, 0));
+      return { cylinder: cylinder.number, pistonPin: cylinder.pinMesh.getWorldPosition(new THREE.Vector3()).toArray(), pistonCrown: crown.toArray(), rodSmallEnd: small.toArray(), rodBigEnd: big.toArray(), crankPin: cylinder.crankPinMesh.getWorldPosition(new THREE.Vector3()).toArray(), centerDistance: small.distanceTo(big) };
+    });
+    return { selectedPart: this.selectedId, camera: this.getCameraState(), projectCamera: this.getProjectCameraState(), inspection: this.getInspectionState(), lastPresetFit: this.lastPresetFit, mechanical, pistonDetail: PISTON_DETAIL, visibleCylinderIds: this.cylinders.filter(cylinder => cylinder.group.visible).map(cylinder => cylinder.number), crankRotation: this.crankRotating.rotation.z, pumpDrive: { axis: this.pumpRotor.getWorldPosition(new THREE.Vector3()).toArray(), rotation: this.pumpRotor.rotation.z }, oilCircuitMode: this.oilFlowKey, oilCircuitPaths: this.oilCircuit.map(path => path.id), camContacts: contacts, maxCamSupportErrorM: Math.max(...contacts.map(contact => Math.abs(contact.supportErrorM))), drawCalls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles, resources: { geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures } };
   }
   animate() {
     if (this.disposed) return; this.controls.update();
@@ -492,7 +585,9 @@ export class EngineScene {
     if (this.disposed) return; this.disposed = true; cancelAnimationFrame(this.frame); this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.pointerDown); this.renderer.domElement.removeEventListener('pointerup', this.pointerUp); this.controls.dispose();
     for (const { material } of this.highlighted) for (const entry of material) entry.dispose();
+    this.root.traverse(node => { if (node.isInstancedMesh) node.dispose(); });
     for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose();
+    for (const texture of this.textures) texture.dispose();
     this.environment.dispose(); this.renderer.dispose(); this.renderer.domElement.remove(); this.labelLayer.remove(); this.leaders.remove(); this.status.remove(); this.note.remove();
   }
 }

@@ -1,3 +1,7 @@
+import './detail.css';
+import { engineDetail } from './detail-model.js';
+import { renderEngineDetails } from './detail-panel.js';
+import { renderKinematicsChart, phaseFromChartClick } from './kinematics-chart.js';
 import './style.css';
 import { GEOMETRY, FIRING_PHASES, normalizeSettings, sampleEngine, advanceAngle, valveLift, valveTiming } from './model.js';
 import { EngineScene } from './scene.js';
@@ -16,14 +20,14 @@ const strokes = {
 let settings = normalizeSettings({}), view = normalizeView(DEFAULT_VIEW), angleRad = 0, playbackRate = .025;
 let running = false, guidedRemaining = null, focused = false, recoveredRaw = null, scene, snapshot;
 let saveTimer, toastTimer, lastFrame = performance.now(), lastReadout = 0, storageBlocked = false;
-let previousExperiment = null, drawnAdvance = null;
+let previousExperiment = null, drawnAdvance = null, externalClock = false;
 
 function toast(message) {
   $('#toast').textContent = message; $('#toast').hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4200);
 }
 function capture() {
-  return createProject({ settings, angleRad, playbackRate, view, camera: scene?.getCameraState() ?? null });
+  return createProject({ settings, angleRad, playbackRate, view, camera: scene?.getProjectCameraState?.() ?? scene?.getCameraState() ?? null });
 }
 function saveLocal() {
   clearTimeout(saveTimer);
@@ -55,7 +59,7 @@ try {
   }
 } catch { storageBlocked = true; $('#save-status').textContent = '자동 저장을 사용할 수 없습니다 · 실험 파일로 보관하세요'; }
 
-function stop() { running = false; guidedRemaining = null; syncPlayback(); scheduleSave(); }
+function stop() { externalClock = false; running = false; guidedRemaining = null; syncPlayback(); scheduleSave(); }
 function syncPlayback() {
   $('#play').textContent = running ? 'Ⅱ 일시정지' : '▶ 재생';
   $('#play').setAttribute('aria-label', running ? '일시정지' : '재생');
@@ -65,7 +69,7 @@ function setAngle(value) { stop(); angleRad = ((value % CYCLE) + CYCLE) % CYCLE;
 function readProject(project) {
   // Validate the complete replacement before touching the current experiment.
   const validated = parseProject(serializeProject(project));
-  stop(); settings = validated.settings;
+  stop(); scene?.restoreInspection?.(); settings = validated.settings;
   ({ angleRad, playbackRate, view } = validated.observation);
   syncControls(); refresh(true);
   if (validated.observation.camera) scene.restoreCameraState(validated.observation.camera);
@@ -74,7 +78,7 @@ function readProject(project) {
 }
 function reset() {
   previousExperiment = capture(); $('#undo-new').hidden = false;
-  stop(); settings = normalizeSettings({}); view = normalizeView(DEFAULT_VIEW); angleRad = 0; playbackRate = .025;
+  stop(); scene?.restoreInspection?.(); settings = normalizeSettings({}); view = normalizeView(DEFAULT_VIEW); angleRad = 0; playbackRate = .025;
   syncControls(); refresh(true); scene.setCameraPreset('iso'); saveLocal();
   toast('새 실험을 시작했습니다. 아래의 되돌리기로 이전 관찰을 복구할 수 있습니다.');
 }
@@ -90,12 +94,19 @@ function focusView(value = !focused) {
   $('#focus-view').textContent = focused ? '전체 화면 구성' : '크게 보기';
   requestAnimationFrame(() => { $('#scene').scrollIntoView({ block: 'nearest' }); $('#scene').focus({ preventScroll: true }); });
 }
-function begin() { running = true; guidedRemaining = null; lastFrame = performance.now(); syncPlayback(); }
+function begin() { externalClock = false; running = true; guidedRemaining = null; lastFrame = performance.now(); syncPlayback(); }
 function toggle() { if (running) stop(); else begin(); }
+function syncRange(selector, value, step) {
+  const input = $(selector), grid = (value - Number(input.min)) / step;
+  // Imported experiments may contain valid values between the normal slider ticks.
+  input.step = Math.abs(grid - Math.round(grid)) < 1e-9 ? String(step) : 'any';
+  input.value = value;
+}
 function syncControls() {
-  $('#rpm').value = settings.rpm; $('#rpm-value').textContent = `${settings.rpm.toLocaleString('ko-KR')} rpm`;
-  $('#cam-advance').value = settings.intakeAdvanceRad / RAD;
-  $('#cam-value').textContent = `${settings.intakeAdvanceRad > 0 ? '+' : ''}${(settings.intakeAdvanceRad / RAD).toFixed(0)}°`;
+  syncRange('#rpm', settings.rpm, 100); $('#rpm-value').textContent = `${settings.rpm.toLocaleString('ko-KR')} rpm`;
+  const advanceDegrees = settings.intakeAdvanceRad / RAD;
+  syncRange('#cam-advance', advanceDegrees, 1);
+  $('#cam-value').textContent = `${advanceDegrees > 0 ? '+' : ''}${advanceDegrees.toLocaleString('ko-KR', { maximumFractionDigits: 3 })}°`;
   const rate = $('#playback-rate');
   rate.querySelector('[data-custom]')?.remove();
   if (![...rate.options].some(option => Math.abs(Number(option.value) - playbackRate) < 1e-10)) {
@@ -130,6 +141,8 @@ function refresh(force = false) {
   $('#intake-lift').textContent = `${(cylinder.valveLifts.intake * 1000).toFixed(2)} mm`;
   $('#exhaust-lift').textContent = `${(cylinder.valveLifts.exhaust * 1000).toFixed(2)} mm`;
   refreshValveChart(cylinder);
+  renderEngineDetails(snapshot, settings, view, scene.getInspectionState?.());
+  renderKinematicsChart(snapshot, settings, view.selectedCylinder);
   for (const c of snapshot.cylinders) {
     $(`#marker-${c.id}`).style.left = `calc(${(c.phaseRad / CYCLE * 100).toFixed(4)}% - 1.5px)`;
     $(`#stroke-${c.id}`).textContent = strokes[c.stroke].name; $(`#stroke-${c.id}`).className = c.stroke;
@@ -205,7 +218,7 @@ function stepSimulation(realSeconds) {
 try {
   scene = new EngineScene($('#scene'), { onSelect: selectPart });
   for (const part of scene.getComponents()) {
-    const option = document.createElement('option'); option.value = part.id; option.textContent = part.name; $('#part-select').append(option);
+    const option = document.createElement('option'); option.value = part.id; option.textContent = part.name; $('#part-select').append(option); $('#focus-part-select').append(option.cloneNode(true));
   }
   $('#cylinder-timeline').innerHTML = [1, 2, 3, 4].map(id => `<div class="cylinder-row"><button data-cylinder-row="${id}">${id}번</button><div class="cycle-track"><i class="cycle-marker" id="marker-${id}"></i></div><span id="stroke-${id}"></span></div>`).join('');
   syncControls(); refresh(true);
@@ -220,7 +233,7 @@ try {
     setAngle((Math.max(intake.open, exhaust.open) + Math.min(intake.close, exhaust.close)) / 2 + FIRING_PHASES[view.selectedCylinder - 1]);
   });
   $('#one-cycle').addEventListener('click', () => {
-    angleRad = 0; view.selectedCylinder = 1; view.selectedPart = 'c1-piston'; playbackRate = normalizePlaybackRate(15 / settings.rpm);
+    externalClock = false; scene.restoreInspection?.(); angleRad = 0; view.selectedCylinder = 1; view.selectedPart = 'c1-piston'; playbackRate = normalizePlaybackRate(15 / settings.rpm);
     guidedRemaining = CYCLE; running = true; lastFrame = performance.now(); syncControls(); refresh(true);
     if (view.cylinderMode === 'single') scene.setCameraPreset('iso');
     $('#scene').scrollIntoView({ block: 'nearest' }); $('#scene').focus({ preventScroll: true });
@@ -240,6 +253,17 @@ try {
   $('#labels').addEventListener('change', event => { view.labels = event.target.checked; refresh(true); scheduleSave(); });
   $('#part-select').addEventListener('change', event => selectPart(event.target.value));
   $('#focus-view').addEventListener('click', () => focusView());
+  const inspectSelected = () => {
+    const inspection = scene.getInspectionState?.();
+    if (inspection?.active && inspection.partId === view.selectedPart) scene.restoreInspection();
+    else if (!scene.inspectPart(view.selectedPart)) toast('이 부품을 현재 화면에서 확대할 수 없습니다. 관찰 범위와 구조 레이어를 확인해 주세요.');
+    refresh(true);
+  };
+  $('#inspect-part').addEventListener('click', inspectSelected); $('#focus-inspect-part').addEventListener('click', inspectSelected);
+  $('#restore-inspection').addEventListener('click', () => { scene.restoreInspection(); refresh(true); });
+  $('#focus-part-select').addEventListener('change', event => selectPart(event.target.value));
+  $('#piston-metric').addEventListener('change', () => refresh(true));
+  $('#piston-chart').addEventListener('click', event => setAngle(phaseFromChartClick(event) + FIRING_PHASES[view.selectedCylinder - 1]));
   $('#save-project').addEventListener('click', saveFile); $('#open-project').addEventListener('click', openFile);
   $('#undo-new').addEventListener('click', () => {
     if (!previousExperiment) return;
@@ -278,12 +302,17 @@ try {
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); lastFrame = performance.now(); });
   window.addEventListener('beforeunload', saveLocal);
   window.engineLab = {
-    getState: () => ({ settings: structuredClone(settings), view: structuredClone(view), angleRad, playbackRate, running, guidedRemaining, focused, snapshot: structuredClone(snapshot) }),
+    getState: () => ({ settings: structuredClone(settings), view: structuredClone(view), angleRad, playbackRate, running, guidedRemaining, focused, snapshot: structuredClone(snapshot), detail: engineDetail(snapshot, settings, view.selectedCylinder), inspection: scene.getInspectionState?.() }),
     project: capture, loadProject: importText, reset, setAngle,
     step: seconds => { stepSimulation(seconds); refresh(true); },
     camera: () => scene.getCameraState(), components: () => scene.getComponents(), sceneDebug: () => scene.getDebug?.(),
   };
-  const frame = now => { const dt = Math.max(0, (now - lastFrame) / 1000); lastFrame = now; if (running) { stepSimulation(dt); refresh(); } requestAnimationFrame(frame); };
+  const frame = now => { const dt = Math.max(0, (now - lastFrame) / 1000); lastFrame = now; if (running && !externalClock) { stepSimulation(dt); refresh(); } requestAnimationFrame(frame); };
+  window.advanceTime = ms => {
+    if (!Number.isFinite(ms) || ms < 0 || ms > 60000) throw new RangeError('진행 시간은 0–60000 밀리초여야 합니다.');
+    externalClock = true; stepSimulation(ms / 1000); refresh(true);
+  };
+  window.render_game_to_text = () => JSON.stringify({ coordinateSystem: 'm, s, rad; +Y up, +Z crank/cam axle; imposed constant rpm, no combustion dynamics', ...window.engineLab.getState() });
   requestAnimationFrame(frame);
 } catch (error) {
   console.error(error); $('#scene').innerHTML = '<p class="fatal">3D 화면을 시작하지 못했습니다.<br>앱을 다시 실행해 주세요.</p>';

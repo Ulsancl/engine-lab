@@ -77,6 +77,12 @@ export function valveLiftDerivative(phaseRad, kind, settings = {}) {
   return liftTerms(phaseRad, kind, normalizeSettings(settings).intakeAdvanceRad).derivative;
 }
 
+// Piecewise derivative with respect to crank angle (m/rad²). At an event
+// boundary this returns the closed-branch convention, not a two-sided limit.
+export function valveLiftSecondDerivative(phaseRad, kind, settings = {}) {
+  return liftTerms(phaseRad, kind, normalizeSettings(settings).intakeAdvanceRad).secondDerivative;
+}
+
 // Fixed basic lobe support function. The scene applies advance through camAngles.
 // phi is a cam-profile angle: d(2 phi)/d phi = 2.
 export function camSupport(kind, phi) {
