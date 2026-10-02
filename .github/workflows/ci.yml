@@ -49,6 +49,9 @@ jobs:
       - name: Verify browser observation and interaction
         timeout-minutes: 10
         run: npm run test:browser
+      - name: Verify component details and analytic motion observations
+        timeout-minutes: 10
+        run: npm run test:detail
       - name: Verify source desktop app
         timeout-minutes: 10
         run: npm run test:desktop
@@ -89,6 +92,8 @@ jobs:
         with:
           name: engine-lab-verification-${{ github.sha }}
           path: |
+            output/detail-browser/*.json
+            output/detail-browser/*.png
             output/browser-integration/report.json
             output/browser-integration/failure.json
             output/browser-integration/*.png

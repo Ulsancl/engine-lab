@@ -175,6 +175,40 @@ try {
     assert.equal(realtimeGuide.finalAngleRad, 0); assert.equal(realtimeGuide.finalGuidedRemaining, null);
     assert.match(await page.locator('#toast').textContent(), /한 사이클 완료/);
   });
+  await check('component inspection follows the moving piston without persisting its temporary camera', async () => {
+    await page.locator('#selected-cylinder').selectOption('3');
+    await page.locator('#angle').fill('90');
+    const before = await project();
+    await page.locator('#inspect-part').click();
+    assert.deepEqual((await state()).inspection, { active: true, partId: 'c3-piston' });
+    await page.locator('#angle').fill('135');
+    const inspected = await project();
+    assert.deepEqual(inspected.observation.camera, before.observation.camera);
+    assert.notDeepEqual(await page.evaluate(() => window.engineLab.camera()), before.observation.camera);
+    assert.match(await page.locator('#part-detail-facts').textContent(), /m\/s/);
+    const target = path.join(evidence, 'inspection.engine.json');
+    await saveDialog(target);
+    await freshToast(() => page.locator('#save-project').click(), '파일로 저장했습니다');
+    sameProject(JSON.parse(await fs.readFile(target, 'utf8')), inspected);
+    await openDialog(target);
+    await freshToast(() => page.locator('#open-project').click(), '엔진 관찰을 불러왔습니다');
+    assert.equal((await state()).inspection.active, false);
+    sameProject(await project(), inspected);
+    await page.screenshot({ path: path.join(evidence, 'native-detail-restored.png') });
+  });
+  await check('packaged kinematic values use physical RPM and ignore the observation playback multiplier', async () => {
+    await page.locator('#rpm').fill('1200'); await page.locator('#angle').fill('90');
+    const initial = (await state()).detail.cylinder.piston;
+    await page.locator('#rpm').fill('2400');
+    const doubled = (await state()).detail.cylinder.piston;
+    assert.ok(Math.abs(doubled.velocityYMps - 2 * initial.velocityYMps) < 1e-10);
+    assert.ok(Math.abs(doubled.accelerationYMps2 - 4 * initial.accelerationYMps2) < 1e-9);
+    await page.locator('#playback-rate').selectOption('0.01');
+    assert.deepEqual((await state()).detail.cylinder.piston, doubled);
+    await page.locator('#piston-metric').selectOption('acceleration');
+    assert.ok(Math.abs(Number(await page.locator('#piston-current-value').getAttribute('data-value')) - doubled.accelerationYMps2) < 1e-9);
+    await page.locator('#piston-metric').selectOption('travel');
+  });
   await check('native save replaces a file atomically and open restores settings, phase, layers and camera', async () => {
     await page.locator('#rpm').fill('2300'); await page.locator('#cam-advance').fill('6');
     await page.locator('#playback-rate').selectOption('0.01');

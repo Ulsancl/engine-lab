@@ -93,6 +93,16 @@ export function annulus(inner, outer, depth, start = 0, length = Math.PI * 2, se
   shape.closePath();
   const geometry = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: segments });
   geometry.translate(0, 0, -depth / 2);
+  // Extrusion's duplicate side vertices otherwise leave visible polygon bands
+  // on turned bores. Smooth only cylindrical walls; axial faces and radial cut
+  // faces retain their exact flat normals and their sharp machined boundaries.
+  const position = geometry.attributes.position, normal = geometry.attributes.normal;
+  for (let i = 0; i < position.count; i += 3) {
+    const radii = [0, 1, 2].map(offset => Math.hypot(position.getX(i + offset), position.getY(i + offset)));
+    if (Math.abs(normal.getZ(i)) > .1 || Math.max(...radii) - Math.min(...radii) > 1e-8) continue;
+    const sign = normal.getX(i) * position.getX(i) + normal.getY(i) * position.getY(i) < 0 ? -1 : 1;
+    for (let offset = 0; offset < 3; offset++) normal.setXYZ(i + offset, sign * position.getX(i + offset) / radii[offset], sign * position.getY(i + offset) / radii[offset], 0);
+  }
   return geometry;
 }
 
