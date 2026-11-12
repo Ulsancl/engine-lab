@@ -4,3 +4,4 @@ output/
 release/
 progress.md
 *.log
+.security-stage-*
