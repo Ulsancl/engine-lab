@@ -168,6 +168,12 @@ try {
       await future.waitForTimeout(260);
       assert.equal(await future.evaluate(() => localStorage.getItem('engine-lab-project-v1')), raw);
       assert.equal((await future.evaluate(() => window.engineLab.project())).schemaVersion, 1);
+      const originals = () => future.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('engine-lab-project-v1-original-')).sort());
+      const firstLaunch = await originals();
+      assert.equal(firstLaunch.length, 1);
+      await future.reload({ waitUntil: 'networkidle' });
+      await future.waitForFunction(() => !!window.engineLab);
+      assert.deepEqual(await originals(), firstLaunch);
     } finally { await futureContext.close(); }
   });
   await check('corrupt automatic-save text is retained and recoverable byte for byte', async () => {
@@ -178,8 +184,24 @@ try {
     const recovery = await context.newPage(); await recovery.goto('http://127.0.0.1:5198/', { waitUntil: 'networkidle' });
     await recovery.waitForFunction(() => window.engineLab && !document.querySelector('#storage-recovery').hidden);
     assert(await recovery.evaluate(raw => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === raw), original));
+    // Once an ordinary observation replaces the damaged primary, restart
+    // before exporting and check both the recovered original and the new data.
+    await recovery.locator('#step').click();
+    await recovery.waitForFunction(raw => {
+      const stored = localStorage.getItem('engine-lab-project-v1');
+      return stored !== raw && JSON.parse(stored)?.observation.angleRad > 0;
+    }, original);
+    const saved = await recovery.evaluate(() => localStorage.getItem('engine-lab-project-v1'));
+    await recovery.reload({ waitUntil: 'networkidle' });
+    await recovery.waitForFunction(() => !!window.engineLab);
+    assert.equal(await recovery.locator('#storage-recovery').isVisible(), true);
+    assert.match(await recovery.locator('#storage-recovery strong').textContent(), /이전에 보관한/);
+    assert.equal(await recovery.evaluate(() => window.engineLab.project().observation.angleRad), JSON.parse(saved).observation.angleRad);
     const downloaded = recovery.waitForEvent('download'); await recovery.locator('#recover-original').click(); const file = await downloaded;
     const dest = path.join(output, 'recovered-original.txt'); await file.saveAs(dest); assert.equal(await fs.readFile(dest, 'utf8'), original);
+    await recovery.locator('#dismiss-recovery').click(); await recovery.reload({ waitUntil: 'networkidle' });
+    await recovery.waitForFunction(() => !!window.engineLab);
+    assert.equal(await recovery.locator('#storage-recovery').isHidden(), true);
     await recovery.close();
   });
   await check('narrow-screen observation stays usable without horizontal overflow', async () => {

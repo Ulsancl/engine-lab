@@ -10,6 +10,8 @@ import { DEFAULT_VIEW, normalizeView, normalizePlaybackRate, createProject, pars
 const $ = selector => document.querySelector(selector), $$ = selector => [...document.querySelectorAll(selector)];
 const TAU = Math.PI * 2, CYCLE = TAU * 2, RAD = Math.PI / 180;
 const STORAGE_KEY = 'engine-lab-project-v1';
+const ORIGINAL_PREFIX = STORAGE_KEY + '-original-';
+const DISMISSED_ORIGINAL = STORAGE_KEY + '-dismissed-original';
 const desktop = window.engineDesktop;
 const strokes = {
   power: { name: '팽창', description: '연소 후의 팽창을 표시합니다. 내려가는 피스톤과 크랭크의 연결을 살펴보세요.' },
@@ -20,7 +22,7 @@ const strokes = {
 let settings = normalizeSettings({}), view = normalizeView(DEFAULT_VIEW), angleRad = 0, playbackRate = .025;
 let running = false, guidedRemaining = null, focused = false, recoveredRaw = null, scene, snapshot;
 let saveTimer, toastTimer, lastFrame = performance.now(), lastReadout = 0, storageBlocked = false;
-let previousExperiment = null, drawnAdvance = null, externalClock = false;
+let previousExperiment = null, drawnAdvance = null, externalClock = false, recoveryKey = null;
 
 function toast(message) {
   $('#toast').textContent = message; $('#toast').hidden = false;
@@ -36,10 +38,25 @@ function saveLocal() {
   catch { $('#save-status').textContent = '자동 저장을 완료하지 못했습니다 · 실험 파일로 보관하세요'; }
 }
 function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveLocal, 180); }
+function latestOriginalKey() {
+  const keys = Object.keys(localStorage).filter(key =>
+    key.startsWith(ORIGINAL_PREFIX) && /^\d+$/.test(key.slice(ORIGINAL_PREFIX.length)));
+  return keys.sort((a, b) => Number(b.slice(ORIGINAL_PREFIX.length)) - Number(a.slice(ORIGINAL_PREFIX.length)))[0];
+}
 function protectOriginal(raw, futureVersion = false) {
   recoveredRaw = raw;
-  try { localStorage.setItem(`${STORAGE_KEY}-original-${Date.now()}`, raw); }
-  catch { storageBlocked = true; }
+  try {
+    recoveryKey = latestOriginalKey();
+    if (!recoveryKey || localStorage.getItem(recoveryKey) !== raw) {
+      let id = Date.now();
+      while (localStorage.getItem(ORIGINAL_PREFIX + id) !== null) id++;
+      localStorage.setItem(ORIGINAL_PREFIX + id, raw);
+      recoveryKey = ORIGINAL_PREFIX + id;
+    }
+  } catch {
+    storageBlocked = true;
+    $('#save-status').textContent = '이전 저장 원문 보호 중 · 현재 관찰은 파일로 보관하세요';
+  }
   if (futureVersion) {
     storageBlocked = true;
     $('#save-status').textContent = '새 버전의 자동 저장 원문을 유지합니다 · 현재 관찰은 파일로 보관하세요';
@@ -51,11 +68,23 @@ function protectOriginal(raw, futureVersion = false) {
 let initialCamera = null;
 try {
   const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw) {
+  if (raw !== null) {
     try {
       const project = parseProject(raw);
       settings = project.settings; ({ angleRad, playbackRate, view } = project.observation); initialCamera = project.observation.camera;
     } catch (error) { protectOriginal(raw, error.futureVersion); }
+  }
+  // After a successful backup the primary can contain a fresh observation on
+  // the next launch. Do not strand its original in an invisible storage key.
+  if (recoveredRaw === null) {
+    const key = latestOriginalKey();
+    const archived = key && localStorage.getItem(DISMISSED_ORIGINAL) !== key ? localStorage.getItem(key) : null;
+    if (archived !== null) {
+      recoveryKey = key; recoveredRaw = archived;
+      $('#storage-recovery strong').textContent = '이전에 보관한 자동 저장 원문이 있습니다.';
+      $('#storage-recovery p').textContent = '현재 관찰은 그대로 유지됩니다. 이전 원문이 필요하면 파일로 보관하세요.';
+      $('#storage-recovery').hidden = false;
+    }
   }
 } catch { storageBlocked = true; $('#save-status').textContent = '자동 저장을 사용할 수 없습니다 · 실험 파일로 보관하세요'; }
 
@@ -287,7 +316,14 @@ try {
       } else await downloadText(recoveredRaw, '엔진-저장원문.txt');
     } catch (error) { toast(`원문을 보관하지 못했습니다. ${error.message}`); }
   });
-  $('#dismiss-recovery').addEventListener('click', () => { $('#storage-recovery').hidden = true; });
+  $('#dismiss-recovery').addEventListener('click', () => {
+    $('#storage-recovery').hidden = true;
+    // A protected primary still needs its warning on every launch; a previous
+    // archived original can stop prompting once the user acknowledges it.
+    if (recoveryKey && !storageBlocked) {
+      try { localStorage.setItem(DISMISSED_ORIGINAL, recoveryKey); } catch { /* Dismiss for this session. */ }
+    }
+  });
   $('#scene').addEventListener('pointerup', scheduleSave); $('#scene').addEventListener('wheel', scheduleSave, { passive: true });
   document.addEventListener('keydown', event => {
     if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey || /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(event.target.tagName) || event.target.isContentEditable || $('#help-dialog').open) return;
