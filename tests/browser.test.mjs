@@ -178,10 +178,16 @@ try {
   });
   await check('corrupt automatic-save text is retained and recoverable byte for byte', async () => {
     const original = '{original invalid engine experiment\n한글 remains intact';
-    await page.evaluate(raw => localStorage.setItem('engine-lab-project-v1', raw), original);
-    // Reload invokes beforeunload; remove its autosave handler by opening a separate
-    // same-origin page, whose fresh load reads the deliberately corrupt fixture.
-    const recovery = await context.newPage(); await recovery.goto('http://127.0.0.1:5198/', { waitUntil: 'networkidle' });
+    // The observation context deliberately freezes timers. Give autosave its
+    // own real clock and seed the original only once, not on every restart.
+    const recoveryContext = await browser.newContext({ acceptDownloads: true });
+    await recoveryContext.addInitScript(raw => {
+      if (!sessionStorage.getItem('recovery-test-seeded')) {
+        localStorage.setItem('engine-lab-project-v1', raw);
+        sessionStorage.setItem('recovery-test-seeded', '1');
+      }
+    }, original);
+    const recovery = await recoveryContext.newPage(); await recovery.goto('http://127.0.0.1:5198/', { waitUntil: 'domcontentloaded' });
     await recovery.waitForFunction(() => window.engineLab && !document.querySelector('#storage-recovery').hidden);
     assert(await recovery.evaluate(raw => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === raw), original));
     // Once an ordinary observation replaces the damaged primary, restart
@@ -202,7 +208,7 @@ try {
     await recovery.locator('#dismiss-recovery').click(); await recovery.reload({ waitUntil: 'networkidle' });
     await recovery.waitForFunction(() => !!window.engineLab);
     assert.equal(await recovery.locator('#storage-recovery').isHidden(), true);
-    await recovery.close();
+    await recoveryContext.close();
   });
   await check('narrow-screen observation stays usable without horizontal overflow', async () => {
     await page.setViewportSize({ width: 390, height: 844 }); await page.clock.runFor(100);
