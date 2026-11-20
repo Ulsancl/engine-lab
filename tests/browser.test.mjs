@@ -2,8 +2,19 @@ import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { autosaveLockName } from '../src/browser-autosave.js';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
+
+async function until(action, message) {
+  const deadline = performance.now() + 15_000;
+  do {
+    if (await action()) return;
+    await delay(25);
+  } while (performance.now() < deadline);
+  assert.fail(message);
+}
 
 const root = path.resolve(import.meta.dirname, '..');
 const output = artifactDirectory(root, path.join(root, 'output/browser-integration'));
@@ -133,7 +144,9 @@ try {
     await page.evaluate(() => window.engineLab.reset());
     await page.locator('#file-input').setInputFiles(filename); await page.clock.runFor(100);
     assert.deepEqual(await project(), original);
-    await page.clock.runFor(300); await page.reload(); await page.waitForFunction(() => !!window.engineLab);
+    await page.clock.runFor(300);
+    await until(() => page.evaluate(project => JSON.stringify(JSON.parse(localStorage.getItem('engine-lab-project-v1'))) === JSON.stringify(project), original), 'imported experiment must save before reload');
+    await page.reload(); await page.waitForFunction(() => !!window.engineLab);
     assert.deepEqual(await project(), original);
   });
   await check('starting a new experiment can restore the preceding observation and camera', async () => {
@@ -189,7 +202,7 @@ try {
     }, original);
     const recovery = await recoveryContext.newPage(); await recovery.goto('http://127.0.0.1:5198/', { waitUntil: 'domcontentloaded' });
     await recovery.waitForFunction(() => window.engineLab && !document.querySelector('#storage-recovery').hidden);
-    assert(await recovery.evaluate(raw => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === raw), original));
+    await recovery.waitForFunction(raw => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === raw), original);
     // Once an ordinary observation replaces the damaged primary, restart
     // before exporting and check both the recovered original and the new data.
     await recovery.locator('#step').click();
@@ -205,7 +218,9 @@ try {
     assert.equal(await recovery.evaluate(() => window.engineLab.project().observation.angleRad), JSON.parse(saved).observation.angleRad);
     const downloaded = recovery.waitForEvent('download'); await recovery.locator('#recover-original').click(); const file = await downloaded;
     const dest = path.join(output, 'recovered-original.txt'); await file.saveAs(dest); assert.equal(await fs.readFile(dest, 'utf8'), original);
-    await recovery.locator('#dismiss-recovery').click(); await recovery.reload({ waitUntil: 'networkidle' });
+    await recovery.locator('#dismiss-recovery').click();
+    await recovery.waitForFunction(() => localStorage.getItem('engine-lab-project-v1-dismissed-original') !== null);
+    await recovery.reload({ waitUntil: 'networkidle' });
     await recovery.waitForFunction(() => !!window.engineLab);
     assert.equal(await recovery.locator('#storage-recovery').isHidden(), true);
     await recoveryContext.close();
@@ -247,6 +262,179 @@ try {
       assert.equal(await current.evaluate(key => localStorage.getItem(key), key), newest);
     } finally { await tabs.close(); }
   });
+
+  const saveKey = 'engine-lab-project-v1';
+  const lockName = autosaveLockName(saveKey);
+  const stored = tab => tab.evaluate(key => localStorage.getItem(key), saveKey);
+  const experiment = tab => tab.evaluate(() => window.engineLab.project());
+  const edit = (tab, value) => tab.evaluate(value => window.engineLab.setAngle(value), value);
+  const exitsWithWarning = tab => tab.evaluate(() => !window.dispatchEvent(new Event('beforeunload', { cancelable: true })));
+  const open = async (tabs, init) => {
+    const tab = await tabs.newPage();
+    tab.on('pageerror', error => errors.push(error.message));
+    if (init) await tab.addInitScript(init[0], init[1]);
+    await tab.goto('http://127.0.0.1:5198/', { waitUntil: 'domcontentloaded' });
+    await tab.waitForFunction(() => !!window.engineLab);
+    return tab;
+  };
+  const exportCurrent = async (tab, destination) => {
+    const pending = tab.waitForEvent('download');
+    await tab.locator('#export-unsaved-project').click();
+    const file = await pending;
+    assert.match(file.suggestedFilename(), /\.engine\.json$/);
+    const target = path.join(output, destination);
+    await file.saveAs(target);
+    return JSON.parse(await fs.readFile(target, 'utf8'));
+  };
+
+  await check('real concurrent tabs share a lock, retain newest experiment and export the conflicted one', async () => {
+    const tabs = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+    let holder;
+    try {
+      holder = await open(tabs);
+      await edit(holder, 1);
+      await until(async () => JSON.parse(await stored(holder))?.observation.angleRad === 1, 'initial observation must be saved');
+      const original = await stored(holder);
+      const first = await open(tabs), second = await open(tabs);
+      for (const tab of [first, second]) assert.equal((await experiment(tab)).observation.angleRad, 1);
+      await holder.evaluate(name => new Promise((ready, fail) => {
+        navigator.locks.request(name, () => new Promise(resolve => {
+          window.releaseAutosaveTestLock = resolve;
+          ready();
+        })).catch(fail);
+      }), lockName);
+      const pendingClients = count => until(async () => {
+        const observed = await holder.evaluate(async ({ name, key }) => {
+          const { pending, held } = await navigator.locks.query();
+          return {
+            raw: localStorage.getItem(key), held: held.some(lock => lock.name === name),
+            clients: new Set(pending.filter(lock => lock.name === name).map(lock => lock.clientId)).size,
+          };
+        }, { name: lockName, key: saveKey });
+        assert.equal(observed.raw, original, 'must not write while another tab holds the lock');
+        return observed.held && observed.clients === count;
+      }, `expected ${count} distinct queued Web Locks clients`);
+
+      await edit(first, 2);
+      await pendingClients(1);
+      await edit(first, 3);
+      await edit(second, 4);
+      await pendingClients(2);
+      assert.equal(await exitsWithWarning(second), true, 'queued work is not durable yet');
+      await holder.evaluate(() => window.releaseAutosaveTestLock());
+
+      await until(async () => JSON.parse(await stored(holder))?.observation.angleRad === 3, 'the first waiting tab must save its latest edit');
+      await second.locator('#autosave-recovery').waitFor({ state: 'visible' });
+      assert.match(await second.locator('#autosave-title').textContent(), /다른 탭/);
+      assert.equal(await exitsWithWarning(second), true, 'conflicted edits are still unsaved');
+      const winner = await stored(holder);
+      await edit(second, 5);
+      const expected = await experiment(second);
+      const file = await exportCurrent(second, 'autosave-conflicted-tab.json');
+      assert.deepEqual(file, expected);
+      assert.equal(file.observation.angleRad, 5);
+      assert.equal(await exitsWithWarning(second), false, 'the matching snapshot was offered for download');
+      assert.equal(await stored(second), winner);
+      // A later unsaved edit must re-arm the warning, without altering the shared primary.
+      await second.locator('#step').click();
+      assert.equal(await exitsWithWarning(second), true);
+      await exportCurrent(second, 'autosave-edited-again.json');
+      assert.equal(await exitsWithWarning(second), false);
+      await second.reload({ waitUntil: 'domcontentloaded' });
+      await second.waitForFunction(() => !!window.engineLab);
+      assert.equal((await experiment(second)).observation.angleRad, 3);
+      assert.equal(await second.locator('#autosave-recovery').isHidden(), true);
+      assert.equal(await stored(second), winner);
+    } finally {
+      await holder?.evaluate(() => window.releaseAutosaveTestLock?.()).catch(() => {});
+      await tabs.close();
+    }
+  });
+
+  await check('rapid same-tab reload restores pending work and keeps stale drafts separate', async () => {
+    const tabs = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+    const reload = async tab => {
+      const accept = dialog => dialog.accept();
+      tab.on('dialog', accept);
+      try { await tab.reload({ waitUntil: 'domcontentloaded' }); }
+      finally { tab.off('dialog', accept); }
+      await tab.waitForFunction(() => !!window.engineLab);
+    };
+    let holder;
+    try {
+      holder = await open(tabs);
+      await edit(holder, 1);
+      await until(async () => JSON.parse(await stored(holder))?.observation.angleRad === 1, 'seed observation must be saved');
+      const original = await stored(holder);
+      const rapid = await open(tabs);
+      await holder.evaluate(name => new Promise((ready, fail) => {
+        navigator.locks.request(name, () => new Promise(resolve => {
+          window.releaseAutosaveTestLock = resolve;
+          ready();
+        })).catch(fail);
+      }), lockName);
+
+      // Navigate while the real lock prevents the shared save; do not wait
+      // for the debounce timer or synthesize a storage write in the test.
+      await edit(rapid, 2);
+      await reload(rapid);
+      assert.equal((await experiment(rapid)).observation.angleRad, 2, 'current tab draft must survive reload');
+      assert.equal(await stored(rapid), original, 'reloaded draft must not bypass the held lock');
+
+      await holder.evaluate(() => window.releaseAutosaveTestLock());
+      await until(async () => JSON.parse(await stored(rapid))?.observation.angleRad === 2, 'the resumed draft commits through the ordinary lock');
+      await until(() => rapid.evaluate(key => sessionStorage.getItem(`${key}:tab-draft`) === null, saveKey), 'committed journal must be cleared');
+
+      const other = await open(tabs);
+      await edit(other, 4);
+      await until(async () => JSON.parse(await stored(other))?.observation.angleRad === 4, 'the other tab must save newer bytes');
+      const latest = await stored(other);
+      await edit(rapid, 5);
+      const older = await experiment(rapid);
+      await reload(rapid);
+      assert.equal((await experiment(rapid)).observation.angleRad, 4, 'newer shared bytes take priority over a conflicting draft');
+      assert.equal(await stored(rapid), latest);
+      assert.equal(await rapid.locator('#tab-draft-recovery').isVisible(), true);
+      const downloaded = rapid.waitForEvent('download');
+      await rapid.locator('#export-interrupted-draft').click();
+      const file = await downloaded;
+      assert.deepEqual(JSON.parse(await fs.readFile(await file.path(), 'utf8')), older);
+      assert.equal(await rapid.locator('#tab-draft-recovery').isHidden(), true);
+      assert.equal(await stored(rapid), latest);
+    } finally {
+      await holder?.evaluate(() => window.releaseAutosaveTestLock?.()).catch(() => {});
+      await tabs.close();
+    }
+  });
+
+  await check('absent or denied Web Locks keep the autosave read-only but allow current file export', async () => {
+    const raw = JSON.stringify(await experiment(page));
+    const reference = JSON.parse(raw).observation.angleRad;
+    for (const denied of [false, true]) {
+      const tabs = await browser.newContext({ acceptDownloads: true });
+      try {
+        const tab = await open(tabs, [({ key, raw, denied }) => {
+          Object.defineProperty(navigator, 'locks', { value: denied ? {
+            request: () => Promise.reject(new DOMException('test denial', 'SecurityError')),
+          } : undefined });
+          localStorage.setItem(key, raw);
+        }, { key: saveKey, raw, denied }]);
+        assert.equal((await experiment(tab)).observation.angleRad, reference);
+        const next = reference === 2 ? 3 : 2;
+        await edit(tab, next);
+        await tab.locator('#autosave-recovery').waitFor({ state: 'visible' });
+        assert.match(await tab.locator('#autosave-title').textContent(), /안전한 자동 저장/);
+        await tab.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+        assert.equal(await exitsWithWarning(tab), true);
+        assert.equal(await stored(tab), raw);
+        const file = await exportCurrent(tab, `autosave-unavailable-${denied}.json`);
+        assert.equal(file.observation.angleRad, next);
+        assert.equal(await exitsWithWarning(tab), false);
+        assert.equal(await stored(tab), raw);
+      } finally { await tabs.close(); }
+    }
+  });
+
   await check('no browser JavaScript or resource errors', async () => { assert.deepEqual(errors, []); });
   await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ status: 'PASSED', checks, errors }, null, 2));
 } catch (error) {

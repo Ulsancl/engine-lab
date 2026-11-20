@@ -3,6 +3,8 @@
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#121b24"><title>Engine Lab · 엔진의 안쪽을 보다</title></head>
 <body>
   <header class="app-header"><a class="brand" href="#main"><span class="brand-mark">E</span><span>ENGINE LAB<small>4행정 · DOHC 구조 관찰</small></span></a><span class="version">1.1 · ENGINE ANATOMY</span><nav aria-label="실험 파일"><button id="save-project">실험 저장</button><button id="open-project">불러오기</button><button id="help" aria-label="사용 안내">?</button></nav></header>
+<aside id="autosave-recovery" class="recovery" aria-labelledby="autosave-title" hidden><div><strong id="autosave-title"></strong><p id="autosave-hint"></p></div><button id="export-unsaved-project" type="button">이 탭의 실험 내려받기</button></aside>
+<aside id="tab-draft-recovery" class="recovery" aria-labelledby="tab-draft-title" hidden><div role="status"><strong id="tab-draft-title">이 탭에서 남긴 임시 실험이 있습니다.</strong><p>자동 저장을 덮어쓰지 않았습니다. 임시 실험이 필요하면 별도 파일로 내려받으세요.</p></div><button id="export-interrupted-draft" type="button">이전 임시 실험 내려받기</button></aside>
   <main id="main" class="layout">
     <aside class="controls panel" aria-label="관찰 조건">
       <p class="eyebrow">안쪽에서 만나는 기계</p><h1>두 바퀴에 담긴<br>네 번의 움직임</h1><p class="muted intro">피스톤, 밸브와 캠이 연결되는 순간을 직접 살펴보세요.</p>
