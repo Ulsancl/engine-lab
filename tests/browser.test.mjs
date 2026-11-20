@@ -168,19 +168,47 @@ try {
       await future.waitForTimeout(260);
       assert.equal(await future.evaluate(() => localStorage.getItem('engine-lab-project-v1')), raw);
       assert.equal((await future.evaluate(() => window.engineLab.project())).schemaVersion, 1);
+      const originals = () => future.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('engine-lab-project-v1-original-')).sort());
+      const firstLaunch = await originals();
+      assert.equal(firstLaunch.length, 1);
+      await future.reload({ waitUntil: 'networkidle' });
+      await future.waitForFunction(() => !!window.engineLab);
+      assert.deepEqual(await originals(), firstLaunch);
     } finally { await futureContext.close(); }
   });
   await check('corrupt automatic-save text is retained and recoverable byte for byte', async () => {
     const original = '{original invalid engine experiment\n한글 remains intact';
-    await page.evaluate(raw => localStorage.setItem('engine-lab-project-v1', raw), original);
-    // Reload invokes beforeunload; remove its autosave handler by opening a separate
-    // same-origin page, whose fresh load reads the deliberately corrupt fixture.
-    const recovery = await context.newPage(); await recovery.goto('http://127.0.0.1:5198/', { waitUntil: 'networkidle' });
+    // The observation context deliberately freezes timers. Give autosave its
+    // own real clock and seed the original only once, not on every restart.
+    const recoveryContext = await browser.newContext({ acceptDownloads: true });
+    await recoveryContext.addInitScript(raw => {
+      if (!sessionStorage.getItem('recovery-test-seeded')) {
+        localStorage.setItem('engine-lab-project-v1', raw);
+        sessionStorage.setItem('recovery-test-seeded', '1');
+      }
+    }, original);
+    const recovery = await recoveryContext.newPage(); await recovery.goto('http://127.0.0.1:5198/', { waitUntil: 'domcontentloaded' });
     await recovery.waitForFunction(() => window.engineLab && !document.querySelector('#storage-recovery').hidden);
     assert(await recovery.evaluate(raw => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === raw), original));
+    // Once an ordinary observation replaces the damaged primary, restart
+    // before exporting and check both the recovered original and the new data.
+    await recovery.locator('#step').click();
+    await recovery.waitForFunction(raw => {
+      const stored = localStorage.getItem('engine-lab-project-v1');
+      return stored !== raw && JSON.parse(stored)?.observation.angleRad > 0;
+    }, original);
+    const saved = await recovery.evaluate(() => localStorage.getItem('engine-lab-project-v1'));
+    await recovery.reload({ waitUntil: 'networkidle' });
+    await recovery.waitForFunction(() => !!window.engineLab);
+    assert.equal(await recovery.locator('#storage-recovery').isVisible(), true);
+    assert.match(await recovery.locator('#storage-recovery strong').textContent(), /이전에 보관한/);
+    assert.equal(await recovery.evaluate(() => window.engineLab.project().observation.angleRad), JSON.parse(saved).observation.angleRad);
     const downloaded = recovery.waitForEvent('download'); await recovery.locator('#recover-original').click(); const file = await downloaded;
     const dest = path.join(output, 'recovered-original.txt'); await file.saveAs(dest); assert.equal(await fs.readFile(dest, 'utf8'), original);
-    await recovery.close();
+    await recovery.locator('#dismiss-recovery').click(); await recovery.reload({ waitUntil: 'networkidle' });
+    await recovery.waitForFunction(() => !!window.engineLab);
+    assert.equal(await recovery.locator('#storage-recovery').isHidden(), true);
+    await recoveryContext.close();
   });
   await check('narrow-screen observation stays usable without horizontal overflow', async () => {
     await page.setViewportSize({ width: 390, height: 844 }); await page.clock.runFor(100);
@@ -191,6 +219,33 @@ try {
     const layout = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, scene: document.querySelector('#scene').getBoundingClientRect().toJSON() }));
     assert(layout.scrollWidth <= layout.width + 1, JSON.stringify(layout)); assert(layout.scene.height >= 280);
     await page.screenshot({ path: path.join(output, 'narrow-observation.png'), fullPage: true });
+  });
+  await check('exporting and closing a stale tab preserves both observations', async () => {
+    const tabs = await browser.newContext({ acceptDownloads: true });
+    const key = 'engine-lab-project-v1';
+    const openTab = async () => {
+      const tab = await tabs.newPage();
+      await tab.goto('http://127.0.0.1:5198/', { waitUntil: 'domcontentloaded' });
+      await tab.waitForFunction(() => !!window.engineLab);
+      return tab;
+    };
+    try {
+      const stale = await openTab();
+      await stale.evaluate(() => window.engineLab.setAngle(1));
+      await stale.waitForFunction(key => JSON.parse(localStorage.getItem(key))?.observation.angleRad === 1, key);
+      const current = await openTab();
+      await current.evaluate(() => window.engineLab.setAngle(2));
+      await current.waitForFunction(key => JSON.parse(localStorage.getItem(key))?.observation.angleRad === 2, key);
+      const newest = await current.evaluate(key => localStorage.getItem(key), key);
+      assert.equal(JSON.parse(newest).observation.angleRad, 2);
+      const pending = stale.waitForEvent('download'); await stale.locator('#save-project').click();
+      const download = await pending;
+      const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));
+      assert.equal(exported.observation.angleRad, 1);
+      const closed = stale.waitForEvent('close');
+      await stale.close({ runBeforeUnload: true }); await closed;
+      assert.equal(await current.evaluate(key => localStorage.getItem(key), key), newest);
+    } finally { await tabs.close(); }
   });
   await check('no browser JavaScript or resource errors', async () => { assert.deepEqual(errors, []); });
   await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ status: 'PASSED', checks, errors }, null, 2));
