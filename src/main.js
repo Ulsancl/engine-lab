@@ -23,6 +23,7 @@ let settings = normalizeSettings({}), view = normalizeView(DEFAULT_VIEW), angleR
 let running = false, guidedRemaining = null, focused = false, recoveredRaw = null, scene, snapshot;
 let saveTimer, toastTimer, lastFrame = performance.now(), lastReadout = 0, storageBlocked = false;
 let previousExperiment = null, drawnAdvance = null, externalClock = false, recoveryKey = null;
+let lastPrimary = null;
 
 function toast(message) {
   $('#toast').textContent = message; $('#toast').hidden = false;
@@ -34,7 +35,18 @@ function capture() {
 function saveLocal() {
   clearTimeout(saveTimer);
   if (storageBlocked) return;
-  try { localStorage.setItem(STORAGE_KEY, serializeProject(capture())); $('#save-status').textContent = '이 기기에 자동 저장됨'; }
+  try {
+    // A delayed autosave or beforeunload from this tab must not replace a
+    // different observation another tab has saved since our last write.
+    if (localStorage.getItem(STORAGE_KEY) !== lastPrimary) {
+      storageBlocked = true;
+      $('#save-status').textContent = '다른 창에서 저장이 변경되었습니다 · 이 창의 관찰은 파일로 보관하세요';
+      return;
+    }
+    const next = serializeProject(capture());
+    localStorage.setItem(STORAGE_KEY, next); lastPrimary = next;
+    $('#save-status').textContent = '이 기기에 자동 저장됨';
+  }
   catch { $('#save-status').textContent = '자동 저장을 완료하지 못했습니다 · 실험 파일로 보관하세요'; }
 }
 function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveLocal, 180); }
@@ -68,6 +80,7 @@ function protectOriginal(raw, futureVersion = false) {
 let initialCamera = null;
 try {
   const raw = localStorage.getItem(STORAGE_KEY);
+  lastPrimary = raw;
   if (raw !== null) {
     try {
       const project = parseProject(raw);

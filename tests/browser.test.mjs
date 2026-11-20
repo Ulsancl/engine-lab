@@ -220,6 +220,33 @@ try {
     assert(layout.scrollWidth <= layout.width + 1, JSON.stringify(layout)); assert(layout.scene.height >= 280);
     await page.screenshot({ path: path.join(output, 'narrow-observation.png'), fullPage: true });
   });
+  check('exporting and closing a stale tab preserves both observations', async () => {
+    const tabs = await browser.newContext({ acceptDownloads: true });
+    const key = 'engine-lab-project-v1';
+    const openTab = async () => {
+      const tab = await tabs.newPage();
+      await tab.goto('http://127.0.0.1:5198/', { waitUntil: 'domcontentloaded' });
+      await tab.waitForFunction(() => !!window.engineLab);
+      return tab;
+    };
+    try {
+      const stale = await openTab();
+      await stale.evaluate(() => window.engineLab.setAngle(1));
+      await stale.waitForFunction(key => JSON.parse(localStorage.getItem(key))?.observation.angleRad === 1, key);
+      const current = await openTab();
+      await current.evaluate(() => window.engineLab.setAngle(2));
+      await current.waitForFunction(key => JSON.parse(localStorage.getItem(key))?.observation.angleRad === 2, key);
+      const newest = await current.evaluate(key => localStorage.getItem(key), key);
+      assert.equal(JSON.parse(newest).observation.angleRad, 2);
+      const pending = stale.waitForEvent('download'); await stale.locator('#save-project').click();
+      const download = await pending;
+      const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));
+      assert.equal(exported.observation.angleRad, 1);
+      const closed = stale.waitForEvent('close');
+      await stale.close({ runBeforeUnload: true }); await closed;
+      assert.equal(await current.evaluate(key => localStorage.getItem(key), key), newest);
+    } finally { await tabs.close(); }
+  });
   await check('no browser JavaScript or resource errors', async () => { assert.deepEqual(errors, []); });
   await fs.writeFile(path.join(output, 'report.json'), JSON.stringify({ status: 'PASSED', checks, errors }, null, 2));
 } catch (error) {
