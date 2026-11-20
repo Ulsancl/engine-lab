@@ -1,4 +1,6 @@
 import './detail.css';
+import { supportsAutosaveLock, withAutosaveLock, writeIfUnchanged } from './browser-autosave.js';
+import { createAutosaveUI, getBrowserLocks, readBrowserDraft } from './autosave-ui.js';
 import { engineDetail } from './detail-model.js';
 import { renderEngineDetails } from './detail-panel.js';
 import { renderKinematicsChart, phaseFromChartClick } from './kinematics-chart.js';
@@ -13,6 +15,7 @@ const STORAGE_KEY = 'engine-lab-project-v1';
 const ORIGINAL_PREFIX = STORAGE_KEY + '-original-';
 const DISMISSED_ORIGINAL = STORAGE_KEY + '-dismissed-original';
 const desktop = window.engineDesktop;
+const browserLocks = desktop ? null : getBrowserLocks();
 const strokes = {
   power: { name: '팽창', description: '연소 후의 팽창을 표시합니다. 내려가는 피스톤과 크랭크의 연결을 살펴보세요.' },
   exhaust: { name: '배기', description: '피스톤이 올라가며 배기 밸브 쪽으로 가스를 내보내는 행정입니다.' },
@@ -23,7 +26,7 @@ let settings = normalizeSettings({}), view = normalizeView(DEFAULT_VIEW), angleR
 let running = false, guidedRemaining = null, focused = false, recoveredRaw = null, scene, snapshot;
 let saveTimer, toastTimer, lastFrame = performance.now(), lastReadout = 0, storageBlocked = false;
 let previousExperiment = null, drawnAdvance = null, externalClock = false, recoveryKey = null;
-let lastPrimary = null;
+let lastPrimary = null, browserAutosave = null, originalPending = false, unreadableStorage = false;
 
 function toast(message) {
   $('#toast').textContent = message; $('#toast').hidden = false;
@@ -32,24 +35,35 @@ function toast(message) {
 function capture() {
   return createProject({ settings, angleRad, playbackRate, view, camera: scene?.getProjectCameraState?.() ?? scene?.getCameraState() ?? null });
 }
+const currentProjectText = () => serializeProject(capture());
 function saveLocal() {
   clearTimeout(saveTimer);
+  if (!desktop) {
+    browserAutosave?.markDirty();
+    if (!storageBlocked && !originalPending) browserAutosave?.flush();
+    return;
+  }
   if (storageBlocked) return;
   try {
-    // A delayed autosave or beforeunload from this tab must not replace a
-    // different observation another tab has saved since our last write.
-    if (localStorage.getItem(STORAGE_KEY) !== lastPrimary) {
+    const next = currentProjectText();
+    if (!writeIfUnchanged(localStorage, STORAGE_KEY, lastPrimary, next)) {
       storageBlocked = true;
       $('#save-status').textContent = '다른 창에서 저장이 변경되었습니다 · 이 창의 관찰은 파일로 보관하세요';
       return;
     }
-    const next = serializeProject(capture());
-    localStorage.setItem(STORAGE_KEY, next); lastPrimary = next;
+    lastPrimary = next;
     $('#save-status').textContent = '이 기기에 자동 저장됨';
-  }
-  catch { $('#save-status').textContent = '자동 저장을 완료하지 못했습니다 · 실험 파일로 보관하세요'; }
+  } catch { $('#save-status').textContent = '자동 저장을 완료하지 못했습니다 · 실험 파일로 보관하세요'; }
 }
-function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveLocal, 180); }
+function scheduleSave() {
+  browserAutosave?.markDirty();
+  if (!desktop && (storageBlocked || originalPending || !browserAutosave?.canSave())) return;
+  clearTimeout(saveTimer); saveTimer = setTimeout(saveLocal, 180);
+}
+function flushBrowserOnHide() {
+  clearTimeout(saveTimer);
+  browserAutosave?.onHide();
+}
 function latestOriginalKey() {
   const keys = Object.keys(localStorage).filter(key =>
     key.startsWith(ORIGINAL_PREFIX) && /^\d+$/.test(key.slice(ORIGINAL_PREFIX.length)));
@@ -57,7 +71,7 @@ function latestOriginalKey() {
 }
 function protectOriginal(raw, futureVersion = false) {
   recoveredRaw = raw;
-  try {
+  const archive = () => {
     recoveryKey = latestOriginalKey();
     if (!recoveryKey || localStorage.getItem(recoveryKey) !== raw) {
       let id = Date.now();
@@ -65,10 +79,22 @@ function protectOriginal(raw, futureVersion = false) {
       localStorage.setItem(ORIGINAL_PREFIX + id, raw);
       recoveryKey = ORIGINAL_PREFIX + id;
     }
-  } catch {
+  };
+  const fail = () => {
     storageBlocked = true;
-    $('#save-status').textContent = '이전 저장 원문 보호 중 · 현재 관찰은 파일로 보관하세요';
-  }
+    if (!futureVersion) $('#save-status').textContent = '이전 저장 원문 보호 중 · 현재 관찰은 파일로 보관하세요';
+    browserAutosave?.report('failed');
+  };
+  if (desktop) {
+    try { archive(); } catch { fail(); }
+  } else if (supportsAutosaveLock(browserLocks)) {
+    // A corrupt primary may only be replaced after its original was archived.
+    originalPending = !futureVersion;
+    void withAutosaveLock(browserLocks, STORAGE_KEY, archive).then(() => {
+      originalPending = false;
+      browserAutosave?.flushIfDirty();
+    }, () => { originalPending = false; fail(); });
+  } else fail();
   if (futureVersion) {
     storageBlocked = true;
     $('#save-status').textContent = '새 버전의 자동 저장 원문을 유지합니다 · 현재 관찰은 파일로 보관하세요';
@@ -99,7 +125,13 @@ try {
       $('#storage-recovery').hidden = false;
     }
   }
-} catch { storageBlocked = true; $('#save-status').textContent = '자동 저장을 사용할 수 없습니다 · 실험 파일로 보관하세요'; }
+} catch { storageBlocked = true; unreadableStorage = true; $('#save-status').textContent = '자동 저장을 사용할 수 없습니다 · 실험 파일로 보관하세요'; }
+
+const tabDraft = desktop ? null : readBrowserDraft({ key: STORAGE_KEY, locks: browserLocks, expected: lastPrimary, allowResume: !storageBlocked && !originalPending, decode: parseProject });
+if (tabDraft?.restored) {
+  settings = tabDraft.restored.settings;
+  ({ angleRad, playbackRate, view, camera: initialCamera } = tabDraft.restored.observation);
+}
 
 function stop() { externalClock = false; running = false; guidedRemaining = null; syncPlayback(); scheduleSave(); }
 function syncPlayback() {
@@ -231,8 +263,14 @@ async function downloadText(text, name) {
   return { canceled: false };
 }
 async function saveFile() {
-  try { const result = await downloadText(serializeProject(capture()), '엔진 관찰.engine.json'); if (!result.canceled) toast('현재 설정·각도·시점을 파일로 저장했습니다.'); }
-  catch (error) { toast(`저장하지 못했습니다. ${error.message}`); }
+  try {
+    const contents = currentProjectText();
+    const result = await downloadText(contents, '엔진 관찰.engine.json');
+    if (!result.canceled) {
+      browserAutosave?.markExported(contents);
+      toast('현재 설정·각도·시점을 파일로 저장했습니다.');
+    }
+  } catch (error) { toast(`저장하지 못했습니다. ${error.message}`); }
 }
 function importText(text) {
   const candidate = parseProject(text); readProject(candidate); toast('저장한 엔진 관찰을 불러왔습니다.');
@@ -245,6 +283,7 @@ async function openFile() {
 }
 function stepSimulation(realSeconds) {
   if (!running) return;
+  const previousAngle = angleRad;
   let simulatedSeconds = realSeconds * playbackRate;
   const increment = simulatedSeconds * settings.rpm * TAU / 60;
   if (guidedRemaining !== null && increment >= guidedRemaining) {
@@ -255,6 +294,7 @@ function stepSimulation(realSeconds) {
     angleRad = advanceAngle(angleRad, simulatedSeconds, settings);
     if (guidedRemaining !== null) guidedRemaining -= increment;
   }
+  if (angleRad !== previousAngle) browserAutosave?.markDirty();
 }
 
 try {
@@ -265,6 +305,15 @@ try {
   $('#cylinder-timeline').innerHTML = [1, 2, 3, 4].map(id => `<div class="cylinder-row"><button data-cylinder-row="${id}">${id}번</button><div class="cycle-track"><i class="cycle-marker" id="marker-${id}"></i></div><span id="stroke-${id}"></span></div>`).join('');
   syncControls(); refresh(true);
   if (initialCamera) scene.restoreCameraState(initialCamera); else scene.setCameraPreset('iso');
+  if (!desktop) {
+    browserAutosave = createAutosaveUI({
+      key: STORAGE_KEY, locks: browserLocks, expected: lastPrimary, baseline: tabDraft.restored ? null : currentProjectText(),
+      capture: currentProjectText, status: $('#save-status'), maySave: () => !storageBlocked && !originalPending,
+      interruptedDraft: tabDraft.interrupted, downloadDraft: raw => downloadText(raw, '이전 엔진 임시 관찰.engine.json'),
+    });
+    if (unreadableStorage || !browserAutosave.canSave()) browserAutosave.report('unavailable');
+    else if (tabDraft.restored) saveLocal();
+  }
   $('#play').addEventListener('click', toggle);
   $('#step').addEventListener('click', () => setAngle(angleRad + 10 * RAD));
   $('#reset-angle').addEventListener('click', () => setAngle(0));
@@ -278,6 +327,7 @@ try {
     externalClock = false; scene.restoreInspection?.(); angleRad = 0; view.selectedCylinder = 1; view.selectedPart = 'c1-piston'; playbackRate = normalizePlaybackRate(15 / settings.rpm);
     guidedRemaining = CYCLE; running = true; lastFrame = performance.now(); syncControls(); refresh(true);
     if (view.cylinderMode === 'single') scene.setCameraPreset('iso');
+    browserAutosave?.markDirty();
     $('#scene').scrollIntoView({ block: 'nearest' }); $('#scene').focus({ preventScroll: true });
   });
   $('#rpm').addEventListener('input', event => { stop(); settings = normalizeSettings({ ...settings, rpm: Number(event.target.value) }); syncControls(); refresh(true); scheduleSave(); });
@@ -318,6 +368,7 @@ try {
     try { if (file.size > 10 * 1024 * 1024) throw new Error('실험 파일은 10 MiB 이하여야 합니다.'); importText(await file.text()); }
     catch (error) { toast(`불러오지 못했습니다. 현재 관찰은 유지합니다. ${error.message}`); }
   });
+  $('#export-unsaved-project').addEventListener('click', saveFile);
   $('#recover-original').addEventListener('click', async () => {
     if (recoveredRaw === null) return;
     try {
@@ -334,7 +385,10 @@ try {
     // A protected primary still needs its warning on every launch; a previous
     // archived original can stop prompting once the user acknowledges it.
     if (recoveryKey && !storageBlocked) {
-      try { localStorage.setItem(DISMISSED_ORIGINAL, recoveryKey); } catch { /* Dismiss for this session. */ }
+      const key = recoveryKey;
+      const dismiss = () => localStorage.setItem(DISMISSED_ORIGINAL, key);
+      if (desktop) { try { dismiss(); } catch { /* Dismiss for this session. */ } }
+      else if (supportsAutosaveLock(browserLocks)) void withAutosaveLock(browserLocks, STORAGE_KEY, dismiss).catch(() => {});
     }
   });
   $('#scene').addEventListener('pointerup', scheduleSave); $('#scene').addEventListener('wheel', scheduleSave, { passive: true });
@@ -348,8 +402,15 @@ try {
     if (command === 'new-project') reset(); else if (command === 'save-project') saveFile(); else if (command === 'open-project') openFile();
     else if (command === 'toggle-running') toggle(); else if (command === 'focus') focusView(); else if (command === 'help') $('#help-dialog').showModal();
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); lastFrame = performance.now(); });
-  window.addEventListener('beforeunload', saveLocal);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (desktop || running) stop();
+      if (!desktop) flushBrowserOnHide();
+    }
+    lastFrame = performance.now();
+  });
+  if (desktop) window.addEventListener('beforeunload', saveLocal);
+  else window.addEventListener('pagehide', flushBrowserOnHide);
   window.engineLab = {
     getState: () => ({ settings: structuredClone(settings), view: structuredClone(view), angleRad, playbackRate, running, guidedRemaining, focused, snapshot: structuredClone(snapshot), detail: engineDetail(snapshot, settings, view.selectedCylinder), inspection: scene.getInspectionState?.() }),
     project: capture, loadProject: importText, reset, setAngle,
