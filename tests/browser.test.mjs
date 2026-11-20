@@ -220,7 +220,7 @@ try {
     assert(layout.scrollWidth <= layout.width + 1, JSON.stringify(layout)); assert(layout.scene.height >= 280);
     await page.screenshot({ path: path.join(output, 'narrow-observation.png'), fullPage: true });
   });
-  check('exporting and closing a stale tab preserves both observations', async () => {
+  await check('exporting and closing a stale tab preserves both observations', async () => {
     const tabs = await browser.newContext({ acceptDownloads: true });
     const key = 'engine-lab-project-v1';
     const openTab = async () => {
