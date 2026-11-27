@@ -214,14 +214,20 @@ try {
     assert.ok(Math.abs((await state()).angleRad - ((paused + Math.PI / 18) % (4 * Math.PI))) < 1e-12);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].focus());
     assert.equal(await page.evaluate(() => document.hidden), false);
-    const startedAt = performance.now();
+    // Measure from the renderer's actual click. Playwright can wait for
+    // actionability before dispatching the event on a busy software renderer.
+    await page.locator('#one-cycle').evaluate(button => {
+      button.addEventListener('click', () => { window.engineCycleTestStart = performance.now(); },
+        { capture: true, once: true });
+    });
     await page.locator('#one-cycle').click();
     realtimeGuide = { requestedCycleSeconds: 8, scope: 'One visible foreground observation on this machine; not a general performance guarantee', samples: [] };
     await waitFor(async () => (await state()).running, 'guided cycle starts');
     let sampleAtTwoSeconds = false;
     await waitFor(async () => {
-      const observed = await page.evaluate(() => ({ ...window.engineLab.getState(), hidden: document.hidden }));
-      const elapsedMs = performance.now() - startedAt;
+      const observed = await page.evaluate(() => ({ ...window.engineLab.getState(), hidden: document.hidden,
+        elapsedMs: performance.now() - window.engineCycleTestStart }));
+      const { elapsedMs } = observed;
       assert.equal(observed.hidden, false, 'The native guided observation was hidden and paused');
       if (!sampleAtTwoSeconds && elapsedMs >= 2000) {
         realtimeGuide.samples.push({ elapsedMs, angleRad: observed.angleRad, running: observed.running, hidden: observed.hidden });
