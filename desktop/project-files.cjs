@@ -1,6 +1,7 @@
 const { constants } = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { windowsWriteProject } = require('./windows-save.cjs');
 const { maxProjectBytes } = require('../src/project-limits.json');
 
 async function readProjectFile(file) {
@@ -22,6 +23,7 @@ async function readProjectFile(file) {
 }
 
 async function writeProjectFile(destination, contents) {
+  if (process.platform === 'win32') return windowsWriteProject(destination, contents);
   // Own the staging directory before cleanup. Keeping it beside the target
   // permits a same-filesystem rename and preserves the previous file on failure.
   const directory = await fs.mkdtemp(path.join(path.dirname(destination), '.engine-save-'));
