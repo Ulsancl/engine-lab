@@ -1,2 +1,10 @@
 import { defineConfig } from 'vite';
-export default defineConfig({ base: './', server: { watch: { ignored: ['**/.security-stage-*', '**/.security-stage-*/**'] }, host: '127.0.0.1', port: 5196, strictPort: true }, build: { outDir: 'dist', emptyOutDir: true } });
+
+export default defineConfig(({ command }) => {
+  if (command === 'build') throw new Error('Use npm run build to validate and stage production inputs.');
+  return {
+    base: './',
+    server: { watch: { ignored: ['**/.security-stage-*', '**/.security-stage-*/**'] },
+      host: '127.0.0.1', port: 5196, strictPort: true },
+  };
+});

@@ -31,3 +31,19 @@ test('artifacts replace regular files atomically and directory publication keeps
   publishDirectory(root, source, destination);
   assert.equal(readInput(root, path.join(destination, 'app')).toString(), 'new');
 });
+
+test('publishing a web bundle rejects a linked destination and preserves both complete trees', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-web-output-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const retained = path.join(root, 'retained');
+  fs.mkdirSync(retained);
+  fs.writeFileSync(path.join(retained, 'index.html'), 'existing result');
+  const stage = stagingDirectory(root), source = path.join(stage, 'dist');
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'index.html'), 'new result');
+  const target = path.join(root, 'dist');
+  fs.symlinkSync(retained, target, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => publishDirectory(root, source, target), /Symlinks and special files/);
+  assert.equal(fs.readFileSync(path.join(retained, 'index.html'), 'utf8'), 'existing result');
+  assert.equal(fs.readFileSync(path.join(source, 'index.html'), 'utf8'), 'new result');
+});

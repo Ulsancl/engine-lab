@@ -5,13 +5,18 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { _electron as electron } from 'playwright';
+import { _electron as electron, chromium } from 'playwright';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { flipFuses, FuseV1Options, FuseVersion, getCurrentFuseWire } from '@electron/fuses';
+import { MAX_PROJECT_BYTES } from '../src/project.js';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedVersion = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
-const packaged = !!process.env.ENGINE_DESKTOP_EXE;
-const executablePath = packaged ? process.env.ENGINE_DESKTOP_EXE : require('electron');
+const packagedExecutable = process.env.ENGINE_DESKTOP_EXE;
+const packaged = Boolean(packagedExecutable);
+let executablePath = packagedExecutable || require('electron');
 assert.ok(path.isAbsolute(executablePath), 'The tested executable must be an absolute path');
 const output = artifactDirectory(root, path.join(root, 'output', `${packaged ? 'desktop-packaged' : 'desktop'}-v${expectedVersion}`));
 await fs.mkdir(output, { recursive: true });
@@ -22,7 +27,7 @@ const env = { ...process.env, ENGINE_LAB_DATA_DIR: profile };
 delete env.ELECTRON_RUN_AS_NODE;
 const projectPath = path.join(evidence, '엔진 관찰.engine.json');
 const checks = [], errors = [], remoteRequests = [], processes = [];
-let app, page, saved, windowRestoration, realtimeGuide, gpu, failure;
+let app, page, saved, windowRestoration, realtimeGuide, gpu, failure, instrumented;
 const state = () => page.evaluate(() => window.engineLab.getState());
 const project = () => page.evaluate(() => window.engineLab.project());
 
@@ -48,6 +53,53 @@ function sameProject(actual, expected) {
     assert.equal(a.zoom ?? 1, b.zoom ?? 1);
   }
 }
+async function verifyProductionExecutable() {
+  // @electron/fuses returns the ASCII fuse states '0' (off) and '1' (on).
+  const wire = await getCurrentFuseWire(packagedExecutable);
+  for (const [name, enabled] of Object.entries({
+    RunAsNode: false, EnableNodeOptionsEnvironmentVariable: false, EnableNodeCliInspectArguments: false,
+    EnableEmbeddedAsarIntegrityValidation: true, OnlyLoadAppFromAsar: true,
+    LoadBrowserProcessSpecificV8Snapshot: false, GrantFileProtocolExtraPrivileges: false,
+  })) {
+    assert.equal(wire[FuseV1Options[name]], (enabled ? '1' : '0').charCodeAt(0), name);
+  }
+  const smokeProfile = path.join(output, 'production-smoke-profile');
+  const child = spawn(packagedExecutable, ['--remote-debugging-port=0', '--enable-logging=stderr'], {
+    env: { ...env, ENGINE_LAB_DATA_DIR: smokeProfile }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  });
+  let logs = '', browser;
+  const exited = once(child, 'exit');
+  exited.catch(() => {});
+  for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { logs = (logs + chunk).slice(-20000); });
+  try {
+    const matchEndpoint = () => /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[^\s]+)/.exec(logs);
+    await waitFor(() => {
+      if (child.exitCode !== null) throw new Error('Hardened executable exited during startup: ' + logs);
+      return matchEndpoint();
+    }, 'hardened executable Chromium endpoint', 30000);
+    browser = await chromium.connectOverCDP(matchEndpoint()[1]);
+    const context = browser.contexts()[0];
+    await waitFor(() => context.pages().some(tab => tab.url() === 'app://engine/'), 'hardened executable application page');
+    const tab = context.pages().find(tab => tab.url() === 'app://engine/');
+    await tab.waitForFunction(() => window.engineLab?.project && document.querySelector('#scene canvas'), undefined, { timeout: 30000 });
+    assert.equal(await tab.evaluate(() => window.engineLab.project().settings.rpm), 1200);
+  } finally {
+    try { await browser?.close(); } finally {
+      child.kill();
+      await exited;
+    }
+  }
+}
+
+async function prepareInstrumentedExecutable() {
+  // Playwright's native-dialog mocks need Node inspection. Keep the tested
+  // production executable intact; change only this disposable copy.
+  instrumented = path.join(output, 'instrumented');
+  await fs.cp(path.dirname(packagedExecutable), instrumented, { recursive: true, errorOnExist: true, force: false });
+  executablePath = path.join(instrumented, path.basename(packagedExecutable));
+  await flipFuses(executablePath, { version: FuseVersion.V1, [FuseV1Options.EnableNodeCliInspectArguments]: true });
+}
+
 async function launch() {
   app = await electron.launch({ executablePath, args: packaged ? [] : [root], env, timeout: 45000 });
   const child = app.process(), processRecord = { pid: child.pid, exited: false };
@@ -103,6 +155,10 @@ async function stableBounds(label) {
 }
 
 try {
+  if (packaged) {
+    await check('unmodified packaged executable enforces Electron fuse settings and renders the app', verifyProductionExecutable);
+    await prepareInstrumentedExecutable();
+  }
   await launch();
   await check('isolated Engine Lab identity, offline bundle, sandbox and native bridge', async () => {
     assert.equal(page.url(), 'app://engine/');
@@ -115,7 +171,7 @@ try {
       sandbox: true, contextIsolation: true, nodeIntegration: false });
     const bridge = await page.evaluate(() => ({ keys: Object.keys(window.engineDesktop).sort(), native: window.engineDesktop.isDesktop,
       node: typeof window.require, process: typeof window.process, brake: typeof window.brakeDesktop }));
-    assert.deepEqual(bridge, { keys: ['isDesktop', 'onCommand', 'openProject', 'saveProject', 'setBusy'],
+    assert.deepEqual(bridge, { keys: ['isDesktop', 'onCommand', 'openProject', 'saveProject', 'saveRecovery'],
       native: true, node: 'undefined', process: 'undefined', brake: 'undefined' });
     assert.deepEqual(errors, []); assert.deepEqual(remoteRequests, []);
     const access = await page.evaluate(async () => ({
@@ -252,7 +308,7 @@ try {
       ['broken.json', '{synthetic invalid JSON\r\n원문'],
       ['future.json', JSON.stringify({ ...saved, schemaVersion: 2 })],
       ['future-model.json', JSON.stringify({ ...saved, modelVersion: 'engine-kinematics-2' })],
-      ['too-large.json', ' '.repeat(10 * 1024 * 1024 + 1)],
+      ['too-large.json', ' '.repeat(MAX_PROJECT_BYTES + 1)],
     ]) {
       const file = path.join(evidence, name); await fs.writeFile(file, raw);
       await openDialog(file);
@@ -347,14 +403,13 @@ try {
     await page.reload();
     await page.waitForFunction(() => window.engineLab?.project && !document.querySelector('#storage-recovery').hidden);
     const target = path.join(evidence, 'recovered-original.txt');
-    await app.evaluate(({ session }, filename) => {
-      globalThis.engineDownload = null;
-      session.defaultSession.once('will-download', (_event, item) => {
-        item.setSavePath(filename); item.once('done', (_event, status) => { globalThis.engineDownload = status; });
-      });
-    }, target);
+    await saveDialog(target, true);
     await page.locator('#recover-original').click();
-    await waitFor(() => app.evaluate(() => globalThis.engineDownload === 'completed'), 'native original download');
+    await waitFor(() => app.evaluate(() => globalThis.engineSaveCalls === 1), 'canceled recovery dialog');
+    await assert.rejects(fs.access(target), { code: 'ENOENT' });
+    await saveDialog(target);
+    await page.locator('#recover-original').click();
+    await waitFor(() => fs.readFile(target, 'utf8').then(value => value === raw, () => false), 'native original recovery');
     assert.equal(await fs.readFile(target, 'utf8'), raw);
     assert.ok(await page.evaluate(value => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === value), raw));
   });
@@ -370,11 +425,11 @@ try {
 } finally {
   if (app) {
     await app.evaluate(() => { globalThis.engineResolveSave?.({ canceled: true }); }).catch(() => {});
-    await page?.evaluate(() => window.engineDesktop?.setBusy(false)).catch(() => {});
     await closeNormally().catch(error => { failure ??= error; process.exitCode = 1; });
   }
+  if (instrumented) await fs.rm(instrumented, { recursive: true, force: true, maxRetries: 4 });
   await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ status: failure ? 'FAILED' : 'PASSED', version: expectedVersion,
-    packaged, executablePath, profile, evidence, checks, errors, remoteRequests, processes, windowRestoration, realtimeGuide, gpu,
+    packaged, executablePath: packagedExecutable || executablePath, profile, evidence, checks, errors, remoteRequests, processes, windowRestoration, realtimeGuide, gpu,
     ...(failure ? { failure: failure.message } : {}) }, null, 2));
   console.log(`Desktop validation: ${checks.length} checks ${failure ? 'completed before failure' : 'passed'}.`);
 }

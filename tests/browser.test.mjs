@@ -5,7 +5,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { autosaveLockName } from '../src/browser-autosave.js';
 import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import { preview } from 'vite';
 
 async function until(action, message) {
   const deadline = performance.now() + 15_000;
@@ -19,8 +19,7 @@ async function until(action, message) {
 const root = path.resolve(import.meta.dirname, '..');
 const output = artifactDirectory(root, path.join(root, 'output/browser-integration'));
 await fs.mkdir(output, { recursive: true });
-const server = await createServer({ root, server: { host: '127.0.0.1', port: 5198, strictPort: true } });
-await server.listen();
+const server = await preview({ root, preview: { host: '127.0.0.1', port: 5198, strictPort: true } });
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1600, height: 1100 }, deviceScaleFactor: 1, acceptDownloads: true });
 const page = await context.newPage(), errors = [], checks = [];
@@ -39,6 +38,7 @@ try {
   await page.waitForFunction(() => !!window.engineLab);
   await page.clock.pauseAt(new Date('2026-10-01T00:01:00Z'));
   await check('real 3D canvas, labelled components and initial paused observation', async () => {
+    assert.match(await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content'), /form-action 'none'/);
     assert.equal(await page.locator('#scene canvas').count(), 1);
     const initial = await state(); assert.equal(initial.running, false); assert.equal(initial.settings.rpm, 1200); assert.equal(initial.view.mode, 'cutaway');
     assert((await page.evaluate(() => window.engineLab.components())).length >= 30);
@@ -338,6 +338,13 @@ try {
     await tab.waitForFunction(() => !!window.engineLab);
     return tab;
   };
+  const reload = async tab => {
+    const accept = dialog => dialog.accept();
+    tab.on('dialog', accept);
+    try { await tab.reload({ waitUntil: 'domcontentloaded' }); }
+    finally { tab.off('dialog', accept); }
+    await tab.waitForFunction(() => !!window.engineLab);
+  };
   const exportCurrent = async (tab, destination) => {
     const pending = tab.waitForEvent('download');
     await tab.locator('#export-unsaved-project').click();
@@ -394,15 +401,15 @@ try {
       const file = await exportCurrent(second, 'autosave-conflicted-tab.json');
       assert.deepEqual(file, expected);
       assert.equal(file.observation.angleRad, 5);
-      assert.equal(await exitsWithWarning(second), false, 'the matching snapshot was offered for download');
+      assert.equal(await exitsWithWarning(second), true, 'download requests do not commit edits');
       assert.equal(await stored(second), winner);
-      // A later unsaved edit must re-arm the warning, without altering the shared primary.
+      // Further edits stay recoverable without altering the shared primary.
       await second.locator('#step').click();
       assert.equal(await exitsWithWarning(second), true);
       await exportCurrent(second, 'autosave-edited-again.json');
-      assert.equal(await exitsWithWarning(second), false);
-      await second.reload({ waitUntil: 'domcontentloaded' });
-      await second.waitForFunction(() => !!window.engineLab);
+      assert.equal(await exitsWithWarning(second), true);
+      await reload(second);
+      assert.equal(await second.locator('#tab-draft-recovery').isVisible(), true);
       assert.equal((await experiment(second)).observation.angleRad, 3);
       assert.equal(await second.locator('#autosave-recovery').isHidden(), true);
       assert.equal(await stored(second), winner);
@@ -414,13 +421,6 @@ try {
 
   await check('rapid same-tab reload restores pending work and keeps stale drafts separate', async () => {
     const tabs = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
-    const reload = async tab => {
-      const accept = dialog => dialog.accept();
-      tab.on('dialog', accept);
-      try { await tab.reload({ waitUntil: 'domcontentloaded' }); }
-      finally { tab.off('dialog', accept); }
-      await tab.waitForFunction(() => !!window.engineLab);
-    };
     let holder;
     try {
       holder = await open(tabs);
@@ -456,11 +456,26 @@ try {
       assert.equal((await experiment(rapid)).observation.angleRad, 4, 'newer shared bytes take priority over a conflicting draft');
       assert.equal(await stored(rapid), latest);
       assert.equal(await rapid.locator('#tab-draft-recovery').isVisible(), true);
+      const draftKey = saveKey + ':tab-draft';
+      const readDraft = () => rapid.evaluate(key => sessionStorage.getItem(key), draftKey);
+      const journal = await readDraft();
+      // Simulate a download which the browser declines to start.
+      await rapid.evaluate(() => window.addEventListener('click', event => {
+        if (event.target instanceof HTMLAnchorElement && event.target.download) event.preventDefault();
+      }));
+      await rapid.locator('#export-interrupted-draft').click();
+      assert.equal(await readDraft(), journal);
+      await reload(rapid);
+      assert.equal(await rapid.locator('#tab-draft-recovery').isVisible(), true);
       const downloaded = rapid.waitForEvent('download');
       await rapid.locator('#export-interrupted-draft').click();
       const file = await downloaded;
       assert.deepEqual(JSON.parse(await fs.readFile(await file.path(), 'utf8')), older);
+      assert.equal(await readDraft(), journal);
+      assert.equal(await rapid.locator('#tab-draft-recovery').isVisible(), true);
+      await rapid.locator('#forget-interrupted-draft').click();
       assert.equal(await rapid.locator('#tab-draft-recovery').isHidden(), true);
+      assert.equal(await readDraft(), null);
       assert.equal(await stored(rapid), latest);
     } finally {
       await holder?.evaluate(() => window.releaseAutosaveTestLock?.()).catch(() => {});
@@ -490,7 +505,7 @@ try {
         assert.equal(await stored(tab), raw);
         const file = await exportCurrent(tab, `autosave-unavailable-${denied}.json`);
         assert.equal(file.observation.angleRad, next);
-        assert.equal(await exitsWithWarning(tab), false);
+        assert.equal(await exitsWithWarning(tab), true);
         assert.equal(await stored(tab), raw);
       } finally { await tabs.close(); }
     }

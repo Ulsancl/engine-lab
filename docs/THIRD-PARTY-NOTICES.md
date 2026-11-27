@@ -1,10 +1,10 @@
 # 외부 소프트웨어 고지
 
-Engine Lab 1.0.0은 Three.js **0.180.0**과 Three.js 예제 모듈을 사용한다. MIT 라이선스 전문은 소스의 `public/THREE-LICENSE.txt`, 빌드의 `dist/THREE-LICENSE.txt`, Windows 설치 폴더의 `resources/THREE-LICENSE.txt`에 포함한다. 재배포할 때 고지를 유지한다. [Three.js r180 원본 라이선스](https://github.com/mrdoob/three.js/blob/r180/LICENSE)
+Engine Lab 1.1.1은 Three.js **0.180.0**과 Three.js 예제 모듈을 사용한다. MIT 라이선스 전문은 소스의 `public/THREE-LICENSE.txt`, 빌드의 `dist/THREE-LICENSE.txt`, Windows 설치 폴더의 `resources/THREE-LICENSE.txt`에 포함한다. 재배포할 때 고지를 유지한다. [Three.js r180 원본 라이선스](https://github.com/mrdoob/three.js/blob/r180/LICENSE)
 
-Windows 앱은 Electron **44.5.1** 실행 환경과 그 안의 Chromium·Node.js 및 관련 구성요소를 포함하도록 구성한다. 설치 폴더의 `LICENSE.electron.txt`와 `LICENSES.chromium.html`은 Electron·Chromium 및 포함 구성요소의 고지이다. 이 파일들도 앱과 함께 유지해야 한다. 의존성의 정확한 버전은 `package-lock.json`에 고정한다.
+Windows 앱은 Electron **44.11.6** 실행 환경과 그 안의 Chromium·Node.js 및 관련 구성요소를 포함하도록 구성한다. 설치 폴더의 `LICENSE.electron.txt`와 `LICENSES.chromium.html`은 Electron·Chromium 및 포함 구성요소의 고지이다. 이 파일들도 앱과 함께 유지해야 한다. 의존성의 정확한 버전은 `package-lock.json`에 고정한다.
 
-Vite **7.3.6**, Playwright **1.63.0**, electron-builder **26.15.3**은 개발·빌드·검증 도구이다. 해당 개발 도구의 실행 패키지는 Windows 앱에 포함하지 않는다. 빌드 결과 JavaScript와 Electron 실행 환경은 포함한다.
+Vite **7.3.8**, Playwright **1.63.0**, electron-builder **26.15.3**은 개발·빌드·검증 도구이다. 해당 개발 도구의 실행 패키지는 Windows 앱에 포함하지 않는다. 빌드 결과 JavaScript와 Electron 실행 환경은 포함한다.
 
 엔진 형상과 환경은 앱 코드로 생성한다. 외부 CAD, 제조사 사진, 카탈로그, 폰트 또는 HDR 파일을 배포하지 않는다. 참고 자료의 링크는 설명을 위한 것이며 해당 자료의 이미지·도면을 앱에 복제하지 않는다.
 
