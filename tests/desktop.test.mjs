@@ -16,6 +16,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedVersion = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
 const packagedExecutable = process.env.ENGINE_DESKTOP_EXE;
 const packaged = Boolean(packagedExecutable);
+// Hosted Windows machines have no physical GPU. Select the OpenGL ES driver
+// explicitly so packaged checks do not depend on the VM's default D3D shader compiler.
+const renderingArgs = packaged && process.env.GITHUB_ACTIONS === 'true' && process.platform === 'win32'
+  ? ['--use-gl=angle', '--use-angle=swiftshader'] : [];
 let executablePath = packagedExecutable || require('electron');
 assert.ok(path.isAbsolute(executablePath), 'The tested executable must be an absolute path');
 const output = artifactDirectory(root, path.join(root, 'output', `${packaged ? 'desktop-packaged' : 'desktop'}-v${expectedVersion}`));
@@ -64,7 +68,7 @@ async function verifyProductionExecutable() {
     assert.equal(wire[FuseV1Options[name]], (enabled ? '1' : '0').charCodeAt(0), name);
   }
   const smokeProfile = path.join(output, 'production-smoke-profile');
-  const child = spawn(packagedExecutable, ['--remote-debugging-port=0', '--enable-logging=stderr'], {
+  const child = spawn(packagedExecutable, [...renderingArgs, '--remote-debugging-port=0', '--enable-logging=stderr'], {
     env: { ...env, ENGINE_LAB_DATA_DIR: smokeProfile }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
   let logs = '', browser;
@@ -104,7 +108,7 @@ async function prepareInstrumentedExecutable() {
 }
 
 async function launch() {
-  app = await electron.launch({ executablePath, args: packaged ? [] : [root], env, timeout: 45000 });
+  app = await electron.launch({ executablePath, args: packaged ? renderingArgs : [root], env, timeout: 45000 });
   const child = app.process(), processRecord = { pid: child.pid, exited: false };
   processes.push(processRecord);
   child.once('exit', (code, signal) => Object.assign(processRecord, { exited: true, code, signal }));

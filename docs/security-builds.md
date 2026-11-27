@@ -10,6 +10,6 @@ Windows에서 프로젝트나 복구 원문을 저장할 때 임시 폴더는 �
 
 ## Windows 공개 후보
 
-`npm run package:desktop`은 개발 및 CI용 설치 파일을 만듭니다. CI는 npm 수명주기 스크립트를 일괄 실행하지 않고 잠긴 Electron과 Playwright 패키지의 전용 설치 도구만 호출합니다. 독립 실행 검사에서 원본 실행 파일의 Electron Fuses와 앱 시작을 검증하고, 네이티브 대화상자 자동화는 임시 복사본에서만 Node 검사 기능을 켜서 수행합니다.
+`npm run package:desktop`은 개발 및 CI용 설치 파일을 만듭니다. CI는 npm 수명주기 스크립트를 일괄 실행하지 않고 잠긴 Electron과 Playwright 패키지의 전용 설치 도구만 호출합니다. 독립 실행 검사에서 원본 실행 파일의 Electron Fuses와 앱 시작을 검증하고, 네이티브 대화상자 자동화는 임시 복사본에서만 Node 검사 기능을 켜서 수행합니다. 호스팅 Windows의 패키지 검사는 SwANGLE로 실제 WebGL 렌더링을 수행하며, 소스 앱 검사는 러너 기본 그래픽 환경을 사용합니다.
 
 공개 후보는 승인된 Windows 환경에서 신뢰할 수 있는 Authenticode 서명 자격 증명 또는 조직 서명 공급자를 electron-builder에 구성한 뒤 `ENGINE_SIGNER_THUMBPRINT`에 기대하는 서명 인증서의 40자리 16진수 지문을 설정하고 `npm run package:release`를 실행합니다. 설치 프로그램 및 앱 실행 파일에 대해 Windows가 유효하다고 판단하고 지정 지문과 일치하는 서명을 확인한 뒤에만 산출물을 내보냅니다. GitHub의 일반 브랜치 및 PR 검증에는 서명 자격 증명이 필요하지 않습니다. SHA-256은 배포 파일의 무결성 확인에 사용합니다.
