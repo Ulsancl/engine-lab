@@ -22,19 +22,60 @@ body.focus-mode .focus-detail-panel{display:block}
 .focus-component-details .detail-note{margin-bottom:0}
 .piston-motion{border-top:1px solid var(--line);padding-top:12px;margin-top:16px}
 .piston-motion summary{color:#d9e4e9;font-size:12px}
-.piston-motion summary span{color:var(--muted);font-size:10px;margin-left:12px}
-.piston-chart-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0 0}
+.piston-motion summary span{color:#b8cbd4;font-size:11px;margin-left:12px}
+.piston-motion summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.piston-chart-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0 8px}
 .piston-chart-controls label{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted)}
 .piston-chart-controls select{padding:6px 10px;width:auto;font-size:11px}
-#piston-current-value{font-size:17px;color:#ffe0aa;font-weight:500;font-variant-numeric:tabular-nums}
-#piston-chart{display:block;width:100%;height:auto;max-height:190px;cursor:crosshair;overflow:visible}
-#piston-chart path{fill:none;stroke:var(--accent);stroke-width:1.8;vector-effect:non-scaling-stroke}
-#piston-chart .kinematic-grid{fill:none;stroke:#405563;stroke-width:.6}
-#piston-chart text{font-size:10px;fill:var(--muted)}
-#piston-chart .kinematic-ticks text{text-anchor:middle}
-#piston-zero{stroke:#66808e;stroke-width:.8;stroke-dasharray:4 4}
-#piston-cursor{stroke:#d2e5ea;stroke-width:1;vector-effect:non-scaling-stroke}
-#piston-dot{fill:var(--accent);stroke:#17232b;stroke-width:1.3}
+.piston-chart-controls #piston-current-value{font-size:17px;color:#e0d2ff;font-weight:500;font-variant-numeric:tabular-nums}
+.condition-readouts,.condition-events{display:grid;gap:8px;margin:12px 0;font-variant-numeric:tabular-nums}
+.condition-readouts{grid-template-columns:repeat(auto-fit,minmax(min(110px,100%),1fr))}
+.condition-events{grid-template-columns:repeat(auto-fit,minmax(min(152px,100%),1fr))}
+.condition-readouts>div,.condition-events>div{padding:7px 9px;background:#111b24;border:1px solid var(--line);border-radius:6px;min-width:0}
+.condition-readouts dt,.condition-events dt{font-size:10px;line-height:1.4}
+.condition-readouts dd,.condition-events dd{margin:3px 0 0;color:#e5edf0}
+.condition-readouts dd{font-size:14px}
+.condition-events dd{font-size:11px;line-height:1.5}
+.condition-readouts>.intake dt,.condition-events>.intake dt{color:var(--intake)}
+.condition-readouts>.exhaust dt,.condition-events>.exhaust dt{color:var(--exhaust)}
+#piston-chart{display:block;width:100%;height:auto;max-width:920px;margin-inline:auto;cursor:crosshair}
+#piston-chart:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+#piston-chart path{fill:none;stroke-width:1.7;vector-effect:non-scaling-stroke}
+#piston-chart .kinematic-grid{stroke:#4b6170;stroke-width:.7}
+#piston-chart .condition-grid-bg{fill:#0e171f;fill-opacity:.44}
+#piston-chart text{fill:var(--muted);font-size:12px}
+#piston-chart .condition-plot-label{fill:#e5edf0;font-size:13px;font-weight:650}
+#piston-chart .condition-axis-value{text-anchor:end;font-variant-numeric:tabular-nums}
+#piston-chart .condition-anchor{fill:#e5edf0;font-weight:650}
+#piston-chart .condition-stroke{fill:currentColor;fill-opacity:.15}
+#piston-chart .condition-stroke-label{fill:currentColor;font-weight:650}
+#piston-chart .condition-baseline-curve{stroke:#c3ced5;stroke-dasharray:2 4}
+#piston-chart .condition-intake-curve,#piston-chart .condition-intake-window{stroke:var(--intake)}
+#piston-chart .condition-exhaust-curve,#piston-chart .condition-exhaust-window{stroke:var(--exhaust)}
+#piston-chart .condition-exhaust-curve{stroke-dasharray:6 2}
+#piston-chart .condition-zero{stroke:#6e8897;stroke-width:.8;stroke-dasharray:4 4;vector-effect:non-scaling-stroke}
+#piston-chart [data-metric=travel]{--piston-trace:var(--accent)}
+#piston-chart [data-metric=velocity]{--piston-trace:var(--teal)}
+#piston-chart [data-metric=acceleration]{--piston-trace:var(--compression)}
+#piston-chart .condition-piston-curve{stroke:var(--piston-trace)}
+#piston-chart circle{stroke:#111b24;stroke-width:1.2;vector-effect:non-scaling-stroke}
+#piston-chart .condition-piston-dot{fill:var(--piston-trace)}
+#piston-chart .condition-intake-dot{fill:var(--intake)}
+#piston-chart .condition-exhaust-dot{fill:var(--exhaust)}
+#piston-chart .condition-hidden{display:none}
+#condition-overlap-band{fill:var(--compression);fill-opacity:.25}
+#piston-cursor{stroke:#e6f1f5;stroke-width:1;vector-effect:non-scaling-stroke}
 body.focus-mode .piston-motion{display:none}
 @media(max-width:1150px){.inspector .component-details{grid-column:1/-1}.focus-component-details .detail-facts{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:700px){.focus-detail-panel{padding:10px 12px}.focus-detail-heading{gap:8px}.focus-detail-heading label{min-width:100%}.focus-detail-heading .inspect-button{width:100%;font-size:10px}.focus-component-details .detail-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.focus-component-details .detail-reference{display:block;margin:5px 0}#piston-chart text{font-size:15px}#piston-current-value{font-size:14px}.piston-chart-controls{gap:5px}.detail-fact{display:flex!important}.detail-fact dd{margin-top:0}}
+@media(max-width:700px){.focus-detail-panel{padding:10px 12px}.focus-detail-heading{gap:8px}.focus-detail-heading label{min-width:100%}.focus-detail-heading .inspect-button{width:100%;font-size:10px}.focus-component-details .detail-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.focus-component-details .detail-reference{display:block;margin:5px 0}.piston-chart-controls{gap:5px}.piston-chart-controls #piston-current-value{font-size:14px}.detail-fact{display:flex!important}.detail-fact dd{margin-top:0}}
+@media(max-width:700px){
+  .condition-readouts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .condition-readouts>div:first-child{grid-column:1/-1;display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+  .condition-readouts>div:first-child dd{margin:0}
+  .condition-events{grid-template-columns:1fr}
+  .condition-events>div{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+  .condition-events dd{margin:0;text-align:right}
+  #piston-chart text{font-size:20px}
+  #piston-chart .condition-axis-value{font-size:17px}
+  #piston-chart .condition-plot-label{font-size:23px}
+}

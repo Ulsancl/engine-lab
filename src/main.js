@@ -5,7 +5,7 @@ import { engineDetail } from './detail-model.js';
 import { renderEngineDetails } from './detail-panel.js';
 import { renderKinematicsChart, phaseFromChartClick } from './kinematics-chart.js';
 import './style.css';
-import { GEOMETRY, FIRING_PHASES, normalizeSettings, sampleEngine, advanceAngle, valveLift, valveTiming } from './model.js';
+import { GEOMETRY, FIRING_PHASES, INTAKE_PROFILE, normalizeSettings, sampleEngine, advanceAngle, valveLift, valveTiming } from './model.js';
 import { EngineScene } from './scene.js';
 import { DEFAULT_VIEW, normalizeView, normalizePlaybackRate, createProject, parseProject, serializeProject } from './project.js';
 
@@ -25,7 +25,7 @@ const strokes = {
 let settings = normalizeSettings({}), view = normalizeView(DEFAULT_VIEW), angleRad = 0, playbackRate = .025;
 let running = false, guidedRemaining = null, focused = false, recoveredRaw = null, scene, snapshot;
 let saveTimer, toastTimer, lastFrame = performance.now(), lastReadout = 0, storageBlocked = false;
-let previousExperiment = null, drawnAdvance = null, externalClock = false, recoveryKey = null;
+let previousExperiment = null, drawnIntakeProfile = null, externalClock = false, recoveryKey = null;
 let lastPrimary = null, browserAutosave = null, originalPending = false, unreadableStorage = false;
 
 function toast(message) {
@@ -181,6 +181,14 @@ function syncControls() {
   const advanceDegrees = settings.intakeAdvanceRad / RAD;
   syncRange('#cam-advance', advanceDegrees, 1);
   $('#cam-value').textContent = `${advanceDegrees > 0 ? '+' : ''}${advanceDegrees.toLocaleString('ko-KR', { maximumFractionDigits: 3 })}°`;
+  const durationDegrees = (settings.intakeDurationRad ?? INTAKE_PROFILE.durationRad.default) / RAD;
+  const liftMillimetres = (settings.intakeMaxLiftM ?? INTAKE_PROFILE.maxLiftM.default) * 1000;
+  syncRange('#intake-duration', durationDegrees, 1);
+  $('#intake-duration-value').textContent = `${durationDegrees.toLocaleString('ko-KR', { maximumFractionDigits: 3 })}°`;
+  $('#intake-duration').setAttribute('aria-valuetext', `${$('#intake-duration-value').textContent} 크랭크각`);
+  syncRange('#intake-max-lift', liftMillimetres, .1);
+  $('#intake-max-lift-value').textContent = `${liftMillimetres.toLocaleString('ko-KR', { minimumFractionDigits: 1, maximumFractionDigits: 3 })} mm`;
+  $('#intake-max-lift').setAttribute('aria-valuetext', $('#intake-max-lift-value').textContent);
   const rate = $('#playback-rate');
   rate.querySelector('[data-custom]')?.remove();
   if (![...rate.options].some(option => Math.abs(Number(option.value) - playbackRate) < 1e-10)) {
@@ -199,7 +207,7 @@ function syncControls() {
 }
 function refresh(force = false) {
   snapshot = sampleEngine(angleRad, settings);
-  scene.update(snapshot, view);
+  scene.update(snapshot, view, settings);
   const now = performance.now(); if (!force && now - lastReadout < 60) return;
   lastReadout = now;
   const cylinder = snapshot.cylinders[view.selectedCylinder - 1], stroke = strokes[cylinder.stroke];
@@ -234,17 +242,18 @@ function refresh(force = false) {
 }
 
 function refreshValveChart(cylinder) {
-  if (drawnAdvance !== settings.intakeAdvanceRad) {
+  const profile = `${settings.intakeAdvanceRad}:${settings.intakeDurationRad ?? ''}:${settings.intakeMaxLiftM ?? ''}`;
+  if (drawnIntakeProfile !== profile) {
     const curve = (kind, values) => Array.from({ length: 361 }, (_, i) => {
       const degrees = i * 2, y = 66 - valveLift(degrees * RAD, kind, values) / GEOMETRY.valveMaxLift * 42;
       return `${i ? 'L' : 'M'}${degrees} ${y.toFixed(3)}`;
     }).join(' ');
-    $('#valve-baseline').setAttribute('d', curve('intake', { intakeAdvanceRad: 0 }));
+    $('#valve-baseline').setAttribute('d', curve('intake', {}));
     $('#valve-exhaust').setAttribute('d', curve('exhaust', settings));
     $('#valve-intake').setAttribute('d', curve('intake', settings));
-    const timing = valveTiming(settings), degrees = value => (value / RAD).toFixed(0);
+    const timing = valveTiming(settings), degrees = value => (value / RAD).toLocaleString('ko-KR', { maximumFractionDigits: 3 });
     $('#valve-events').textContent = `흡기 ${degrees(timing.intake.open)}–${degrees(timing.intake.close)}° · 배기 ${degrees(timing.exhaust.open)}–${degrees(timing.exhaust.close)}° · 오버랩 ${degrees(timing.overlapRad)}°`;
-    drawnAdvance = settings.intakeAdvanceRad;
+    drawnIntakeProfile = profile;
   }
   const phase = cylinder.phaseRad / RAD;
   $('#timing-cylinder').textContent = `${cylinder.id}번 실린더`;
@@ -254,6 +263,11 @@ function refreshValveChart(cylinder) {
     $(`#${kind}-dot`).setAttribute('cx', phase);
     $(`#${kind}-dot`).setAttribute('cy', 66 - cylinder.valveLifts[kind] / GEOMETRY.valveMaxLift * 42);
   }
+}
+
+function setIntakeConditions(changes) {
+  settings = normalizeSettings({ ...settings, ...changes });
+  syncControls(); refresh(true); scheduleSave();
 }
 
 async function downloadText(text, name) {
@@ -331,8 +345,12 @@ try {
     $('#scene').scrollIntoView({ block: 'nearest' }); $('#scene').focus({ preventScroll: true });
   });
   $('#rpm').addEventListener('input', event => { stop(); settings = normalizeSettings({ ...settings, rpm: Number(event.target.value) }); syncControls(); refresh(true); scheduleSave(); });
-  $('#cam-advance').addEventListener('input', event => { settings = normalizeSettings({ ...settings, intakeAdvanceRad: Number(event.target.value) * RAD }); syncControls(); refresh(true); scheduleSave(); });
-  $('#reset-timing').addEventListener('click', () => { settings = normalizeSettings({ ...settings, intakeAdvanceRad: 0 }); syncControls(); refresh(true); scheduleSave(); });
+  $('#cam-advance').addEventListener('input', event => setIntakeConditions({ intakeAdvanceRad: event.target.valueAsNumber * RAD }));
+  $('#intake-duration').addEventListener('input', event => setIntakeConditions({ intakeDurationRad: event.target.valueAsNumber * RAD }));
+  $('#intake-max-lift').addEventListener('input', event => setIntakeConditions({ intakeMaxLiftM: event.target.valueAsNumber / 1000 }));
+  $('#reset-timing').addEventListener('click', () => setIntakeConditions({
+    intakeAdvanceRad: 0, intakeDurationRad: INTAKE_PROFILE.durationRad.default, intakeMaxLiftM: INTAKE_PROFILE.maxLiftM.default,
+  }));
   $('#playback-rate').addEventListener('change', event => { guidedRemaining = null; playbackRate = normalizePlaybackRate(Number(event.target.value)); syncControls(); scheduleSave(); });
   $('#selected-cylinder').addEventListener('change', event => { view.selectedCylinder = Number(event.target.value); view.selectedPart = `c${view.selectedCylinder}-piston`; syncControls(); refresh(true); if (view.cylinderMode === 'single') scene.setCameraPreset('iso'); scheduleSave(); });
   $$('[data-cylinder-row]').forEach(button => button.addEventListener('click', () => selectPart(`c${button.dataset.cylinderRow}-piston`)));

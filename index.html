@@ -11,7 +11,18 @@
       <button class="primary lesson" id="one-cycle">한 사이클 천천히 보기 <span>8초</span></button>
       <div class="field"><label for="rpm">설정 회전수 <output id="rpm-value">1,200 rpm</output></label><input id="rpm" type="range" min="100" max="6000" step="100" value="1200"><p class="hint">기구에 지정한 회전수입니다.</p></div>
       <div class="field"><label for="playback-rate">관찰 속도</label><select id="playback-rate"><option value="0.01">1/100 · 아주 천천히</option><option value="0.025" selected>1/40 · 천천히</option><option value="0.05">1/20</option><option value="0.1">1/10</option><option value="1">실시간</option></select><p class="hint" id="visible-speed">화면에서는 30 rpm으로 움직입니다.</p></div>
-      <div class="field"><label for="cam-advance">흡기 캠 앞당김 <output id="cam-value">0°</output></label><input id="cam-advance" type="range" min="-10" max="10" step="1" value="0"><p class="hint">크랭크각 기준. +값은 흡기 밸브를 더 일찍 엽니다.</p><button class="text-button" id="reset-timing">기본 타이밍</button></div>
+      <div class="field">
+        <label for="cam-advance">흡기 캠 앞당김 <output id="cam-value">0°</output></label>
+        <input id="cam-advance" type="range" min="-10" max="10" step="1" value="0">
+        <p class="hint">크랭크각 기준. +값은 흡기 밸브를 더 일찍 엽니다.</p>
+        <label for="intake-duration">흡기 밸브 개방 기간 <output id="intake-duration-value" for="intake-duration" aria-hidden="true">230°</output></label>
+        <input id="intake-duration" type="range" min="220" max="260" step="1" value="230" aria-describedby="intake-duration-hint">
+        <p class="hint" id="intake-duration-hint">크랭크각 기준. 최대 리프트 각도를 중심으로 개방 구간이 늘거나 줄어듭니다.</p>
+        <label for="intake-max-lift">흡기 밸브 최대 리프트 <output id="intake-max-lift-value" for="intake-max-lift" aria-hidden="true">6.0 mm</output></label>
+        <input id="intake-max-lift" type="range" min="4" max="6" step="0.1" value="6" aria-describedby="intake-max-lift-hint">
+        <p class="hint" id="intake-max-lift-hint">밸브 축을 따라 이동하는 최대 거리입니다.</p>
+        <button class="text-button" id="reset-timing">기본 흡기 조건</button>
+      </div>
       <fieldset class="field"><legend>관찰 범위</legend><div class="segmented"><button data-cylinder-mode="all" aria-pressed="true">직렬 4기통</button><button data-cylinder-mode="single" aria-pressed="false">한 실린더</button></div><label for="selected-cylinder" class="small-label">기준 실린더</label><select id="selected-cylinder"><option value="1">1번 실린더</option><option value="2">2번 실린더</option><option value="3">3번 실린더</option><option value="4">4번 실린더</option></select></fieldset>
       <details class="field"><summary>구조 레이어</summary><label class="check"><input data-layer="block" type="checkbox" checked>실린더 블록</label><label class="check"><input data-layer="head" type="checkbox" checked>헤드와 덮개</label><label class="check"><input data-layer="timing" type="checkbox" checked>타이밍 체인</label><label class="check"><input data-layer="lubrication" type="checkbox">윤활 경로</label><p class="hint">윤활은 조립 상태의 대표 경로를 보여줍니다.</p></details>
       <p class="scope-note">대표 구조의 운동학 실험입니다. 연소 색은 행정 표시이며, 출력·토크·오일 압력을 계산하지 않습니다.</p>
@@ -28,9 +39,9 @@
         <div class="cylinder-timeline" id="cylinder-timeline"></div>
         <p class="hint" id="cycle-explanation">같은 피스톤 높이라도 행정은 다릅니다. 1번과 4번을 번갈아 살펴보세요.</p>
         <details class="valve-timing" open><summary>밸브 열림 비교 <span id="timing-cylinder">1번 실린더</span></summary>
-          <div class="timing-legend"><span class="intake">― 현재 흡기</span><span class="baseline-key">┄ 기본 흡기</span><span class="exhaust">― 배기</span><span>최대 6 mm</span></div>
+          <div class="timing-legend"><span class="intake">― 현재 흡기</span><span class="baseline-key">┄ 기본 흡기</span><span class="exhaust">― 배기</span><span>리프트 눈금 0–6 mm</span></div>
           <svg id="valve-chart" viewBox="0 0 720 90" role="img" aria-label="선택 실린더의 720도 사이클에 따른 밸브 리프트 비교">
-            <title>캠 앞당김에 따른 흡기 밸브 열림 변화</title>
+            <title>현재 흡기 조건과 기본 밸브 리프트 비교</title>
             <path class="chart-grid" d="M0 66H720 M0 24H720 M180 10V70 M360 10V70 M540 10V70"/>
             <path id="valve-baseline" class="baseline-curve"/><path id="valve-exhaust" class="exhaust-curve"/><path id="valve-intake" class="intake-curve"/>
             <line id="valve-cursor" x1="0" x2="0" y1="8" y2="71"/><circle id="intake-dot" r="3"/><circle id="exhaust-dot" r="3"/>
@@ -38,7 +49,7 @@
           </svg>
           <label for="valve-angle" class="timing-angle">선택 실린더 각도 <output id="valve-angle-value">0°</output></label><input id="valve-angle" aria-label="선택 실린더 사이클 각도" type="range" min="0" max="720" step="1" value="0">
           <div class="timing-events"><span id="valve-events"></span><button id="show-overlap" class="text-button">오버랩 순간 보기</button></div>
-          <p class="hint">각도는 선택 실린더의 팽창 시작을 0°로 표시합니다. 점선과 실선을 비교해 흡기 열림·닫힘의 이동을 살펴보세요.</p>
+          <p class="hint">선택 실린더의 팽창 시작이 0°입니다. 점선과 실선에서 흡기 열림·닫힘 각도와 최대 리프트를 비교하세요.</p>
         </details>
         <details class="piston-motion" open><summary>피스톤 운동을 수치로 보기 <span id="piston-chart-cylinder">1번 실린더</span></summary><div class="piston-chart-controls"><label>관측값 <select id="piston-metric"><option value="travel">하강 거리</option><option value="velocity">속도</option><option value="acceleration">가속도</option></select></label><output id="piston-current-value">0.0 mm</output></div><svg id="piston-chart" viewBox="0 0 720 165" role="img" aria-label="선택 실린더의 피스톤 운동"><title>유한한 로드 길이에 따른 피스톤 운동</title><path class="kinematic-grid" d="M46 16V126H706 M211 16V126 M376 16V126 M541 16V126 M706 16V126"/><line id="piston-zero" x1="46" x2="706"/><path id="piston-curve"/><line id="piston-cursor" y1="16" y2="126"/><circle id="piston-dot" r="3.5"/><text id="piston-axis-top" x="40" text-anchor="end"></text><text id="piston-axis-bottom" x="40" text-anchor="end"></text><text id="piston-metric-unit" x="1" y="10">mm</text><g class="kinematic-ticks"><text x="46" y="151">0°</text><text x="211" y="151">180°</text><text x="376" y="151">360°</text><text x="541" y="151">540°</text><text x="706" y="151">720°</text></g></svg><p id="piston-chart-note" class="hint"></p><p class="hint">그래프를 누르거나 위의 선택 실린더 각도 막대를 움직여 해당 순간을 관찰하세요.</p></details>
       </section>

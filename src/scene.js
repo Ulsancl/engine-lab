@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { FIRING_PHASES } from './model.js';
+import { FIRING_PHASES, GEOMETRY, normalizeSettings } from './model.js';
 import { SCENE_DIMENSIONS as D, OIL_PUMP_GEOMETRY, oilCircuitPaths, crankOilPassage, valveGeometry, createCamGeometry, annulus, sprocketGeometry, timingPath, layoutLabels, fitEngineCamera } from './scene-geometry.js';
 import { PISTON_DETAIL, pistonCrownGeometry, pistonSkirtGeometry, beveledPlate, rodBeamGeometry, rodFlangeGeometry, crankCheekGeometry, metalFinishTexture } from './mechanical-geometry.js';
+import { linerGeometry, honingTexture, blockDeckGeometry, headDeckGeometry, portFlangeGeometry, portShellGeometry, valveFaceGeometry, valveSeatGeometry, hardenedJournalGeometry, boltGeometry, chainPlateGeometry } from './apparatus-geometry.js';
 import './scene.css';
 
 const TAU = Math.PI * 2;
@@ -11,6 +12,10 @@ const vec = values => new THREE.Vector3(...values);
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const DEFAULT_VIEW = { cylinderMode: 'all', selectedCylinder: 1, mode: 'cutaway', explode: .35, labels: true, layers: { block: true, head: true, timing: true, lubrication: false }, selectedPart: 'c1-piston' };
 const STROKES = { power: ['팽창', 0xefb56e], exhaust: ['배기', 0xd88073], intake: ['흡기', 0x63c6df], compression: ['압축', 0xb4a0dd] };
+const PORT_COLORS = { intake: 0x64cced, exhaust: 0xe99a6b };
+const SPRING_BOTTOM = .013;
+const SPRING_HEIGHT = .013;
+const CHAMBER_ROOF = .218;
 
 export class EngineScene {
   constructor(container, { onSelect = () => {} } = {}) {
@@ -21,7 +26,7 @@ export class EngineScene {
     this.camera = new THREE.PerspectiveCamera(37, 1, .005, 12);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.15;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.04;
     this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.setAttribute('aria-label', '회전하고 부품을 선택할 수 있는 4행정 엔진 3D 구조');
     container.append(this.renderer.domElement);
@@ -30,12 +35,12 @@ export class EngineScene {
     this.controls.addEventListener('change', () => { this.needsRender = true; });
     const environment = new RoomEnvironment(); const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.environment = pmrem.fromScene(environment, .025); this.scene.environment = this.environment.texture; environment.dispose(); pmrem.dispose();
-    this.scene.environmentIntensity = .85;
-    this.scene.add(new THREE.HemisphereLight(0xc7e6ff, 0x263344, 1.2));
-    const key = new THREE.DirectionalLight(0xffead1, 4.2); key.position.set(.6, 1.3, -.6); key.castShadow = true;
+    this.scene.environmentIntensity = .76;
+    this.scene.add(new THREE.HemisphereLight(0xc7e6ff, 0x263344, .76));
+    const key = new THREE.DirectionalLight(0xffead1, 2.9); key.position.set(.43, 1.3, -.64); key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024); key.shadow.camera.left = -.65; key.shadow.camera.right = .65; key.shadow.camera.top = .65; key.shadow.camera.bottom = -.65;
     key.shadow.camera.near = .1; key.shadow.camera.far = 3; key.shadow.bias = -.0002; key.shadow.normalBias = .001;
-    this.scene.add(key); const rim = new THREE.DirectionalLight(0x7ebcde, 2.7); rim.position.set(-.7, .5, .8); this.scene.add(rim);
+    this.scene.add(key); const rim = new THREE.DirectionalLight(0x86b8d9, 1.5); rim.position.set(-.7, .5, .8); this.scene.add(rim);
     this.root = new THREE.Group(); this.scene.add(this.root);
     this.createMaterials(); this.buildEngine(); this.buildStage(); this.buildOverlay();
     this.raycaster = new THREE.Raycaster(); this.pointer = new THREE.Vector2();
@@ -50,6 +55,7 @@ export class EngineScene {
   createMaterials() {
     const finish = kind => { const texture = metalFinishTexture(kind); texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy()); this.textures.add(texture); return texture; };
     const turned = finish('turned'), linear = finish('linear'), cast = finish('cast');
+    const hone = honingTexture(); hone.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy()); this.textures.add(hone);
     this.mat = {
       aluminum: this.material({ color: '#b3bdc3', metalness: .88, roughness: .3, bumpMap: linear, bumpScale: .000035 }),
       turned: this.material({ color: '#c3cbd0', metalness: .9, roughness: .27, bumpMap: turned, bumpScale: .000035 }),
@@ -60,12 +66,31 @@ export class EngineScene {
       bronze: this.material({ color: '#b4a17c', metalness: .86, roughness: .3 }),
       black: this.material({ color: '#202c34', metalness: .35, roughness: .56 }),
       cut: this.material({ color: '#c8b693', metalness: .63, roughness: .36 }),
+      honed: this.material({ color: '#87999e', metalness: .74, roughness: .53, map: hone, bumpMap: hone, bumpScale: .00025, roughnessMap: hone }),
       intake: this.material({ color: '#549cac', metalness: .65, roughness: .32 }),
       exhaust: this.material({ color: '#9c8070', metalness: .83, roughness: .4 }),
-      oil: this.material({ color: '#ffb941', emissive: '#ac6711', emissiveIntensity: .5, metalness: .3, roughness: .24, transparent: true, opacity: .75, depthWrite: false, depthTest: false }),
+      oil: this.material({ color: '#eea82a', emissive: '#ac6711', emissiveIntensity: .42, metalness: .3, roughness: .24, transparent: true, opacity: .55, depthWrite: false, depthTest: false }),
+      oilMarker: this.material({ color: '#ffe8a1', emissive: '#ffc15d', emissiveIntensity: .86, metalness: .1, roughness: .32, transparent: true, opacity: .88, depthWrite: false, depthTest: false }),
       ceramic: this.material({ color: '#efebe0', metalness: .05, roughness: .27 }),
       transparent: this.material({ color: '#87aabc', metalness: .28, roughness: .36, transparent: true, opacity: .12, depthWrite: false, side: THREE.DoubleSide }),
     };
+    this.fastenerGeometry = boltGeometry();
+    this.fastenerMaterials = [this.mat.steel, this.mat.darkSteel, this.mat.turned];
+    this.linerGeometries = [linerGeometry(false), linerGeometry(true)];
+    this.deckGeometries = [blockDeckGeometry(false), blockDeckGeometry(true)];
+    this.headDeckGeometries = [headDeckGeometry(false), headDeckGeometry(true)];
+    this.portFlangeGeometry = portFlangeGeometry();
+    this.portShellGeometries = new Map();
+    this.valveFaceGeometry = valveFaceGeometry();
+    this.valveSeatGeometry = valveSeatGeometry();
+    this.camProfiles = { intake: createCamGeometry('intake'), exhaust: createCamGeometry('exhaust') };
+    this.intakeProfile = this.intakeProfileKey({});
+    this.crankPinGeometry = hardenedJournalGeometry(.0133, .026);
+    this.mainJournalGeometry = hardenedJournalGeometry(.022, .027);
+    this.cheekGeometry = crankCheekGeometry();
+    this.chamberGeometry = new THREE.CylinderGeometry(.0408, .0408, 1, 52, 1, true);
+    this.curtainGeometry = new THREE.CylinderGeometry(.01065, .01065, 1, 36, 1, true);
+    this.gasMarkerGeometry = new THREE.SphereGeometry(.00215, 10, 8);
   }
   mesh(geometry, material, parent, position = null) {
     this.geometries.add(geometry); const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = !material.transparent; mesh.receiveShadow = true;
@@ -95,36 +120,127 @@ export class EngineScene {
     const mesh = this.mesh(annulus(inner, outer, width, start, length), material, parent, position); if (axis === 'y') mesh.rotation.x = Math.PI / 2; return mesh;
   }
   bolt(parent, position, axis = 'y', scale = 1) {
-    const head = this.cylinder(.0031 * scale, .003 * scale, this.mat.polished, parent, position, axis, 6);
+    const head = this.mesh(this.fastenerGeometry, this.fastenerMaterials, parent, position);
+    head.scale.setScalar(scale);
+    if (axis === 'z') head.rotation.x = Math.sign(position[2]) * Math.PI / 2;
+    if (axis === 'x') head.rotation.z = -Math.sign(position[0]) * Math.PI / 2;
+    if (axis === 'y' && position[1] < 0) head.rotation.x = Math.PI;
     return head;
+  }
+  intakeProfileKey(settings) {
+    const { intakeDurationRad, intakeMaxLiftM } = normalizeSettings(settings);
+    return `${intakeDurationRad ?? 'default'}:${intakeMaxLiftM ?? 'default'}`;
+  }
+  updateIntakeProfile(settings) {
+    const key = this.intakeProfileKey(settings);
+    if (key === this.intakeProfile) return;
+    const previous = this.camProfiles.intake;
+    const geometry = createCamGeometry('intake', settings);
+    this.camProfiles.intake = geometry;
+    this.intakeProfile = key;
+    this.geometries.add(geometry);
+    for (const lobe of this.cams.intake.lobes) lobe.mesh.geometry = geometry;
+    this.geometries.delete(previous);
+    previous.dispose();
+  }
+  buildHeadPod(parent, z, cut) {
+    const head = new THREE.Group(), m = this.mat;
+    head.position.z = z;
+    parent.add(head);
+    this.mesh(this.headDeckGeometries[Number(cut)], [m.cut, m.cast], head, [0, CHAMBER_ROOF, 0]);
+    for (const kind of ['intake', 'exhaust']) {
+      const sign = kind === 'intake' ? -1 : 1;
+      if (!cut || kind === 'intake') {
+        this.mesh(this.portFlangeGeometry, [m.aluminum, m.cast], head, [sign * .075, .243, 0]);
+        for (const zz of [-.036, 0, .036]) this.bolt(head, [sign * .079, .248, zz], 'x', .72);
+      }
+      for (const pair of [-1, 1]) {
+        const { seat, n } = valveGeometry(kind, 0, 0);
+        const bowl = vec(seat).addScaledVector(vec(n), .004);
+        const truncated = cut && kind === 'exhaust';
+        const key = `${kind}-${truncated}`;
+        if (!this.portShellGeometries.has(key)) {
+          const port = new THREE.CubicBezierCurve3(
+            new THREE.Vector3(sign * (truncated ? .043 : .078), truncated ? .244 : .243, 0),
+            new THREE.Vector3(sign * (truncated ? .037 : .049), .243, 0),
+            bowl.clone().addScaledVector(vec(n), .007),
+            bowl,
+          );
+          this.portShellGeometries.set(key, portShellGeometry(port));
+        }
+        this.mesh(this.portShellGeometries.get(key), [m.cast, m.aluminum], head, [0, 0, pair * D.valvePairZ]);
+      }
+    }
+    return head;
+  }
+  buildValveFlow(kind, geometry, group, guide, pair) {
+    const color = PORT_COLORS[kind], transparent = { color, emissive: color, transparent: true, depthWrite: false, side: THREE.DoubleSide };
+    const gap = this.mesh(this.curtainGeometry, this.material({ ...transparent, opacity: .22, emissiveIntensity: .32 }), guide);
+    gap.userData.ignorePick = true;
+    const direction = Math.sign(geometry.seat[0]);
+    const [x, y, z] = geometry.seat;
+    const markerMaterial = this.material({ ...transparent, opacity: .65, emissiveIntensity: .8 });
+    const markers = Array.from({ length: 3 }, () => {
+      const mesh = this.mesh(this.gasMarkerGeometry, markerMaterial, group);
+      mesh.userData.ignorePick = true;
+      return mesh;
+    });
+    const route = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(direction * .085, .243, z),
+      new THREE.Vector3(direction * .047, .243, z),
+      new THREE.Vector3(x, y - .002, z + pair * .011),
+      new THREE.Vector3(x * .78, y - .023, z + pair * .010),
+    ]);
+    return { gap, markers, route };
   }
   buildEngine() {
     const m = this.mat;
     this.block = this.part('block', '실린더 블록', '4개 실린더와 크랭크 지지부를 연결하는 주조 몸체입니다. 절개에서는 관찰면의 벽을 제거합니다.', '알루미늄 합금 · 주철 라이너', this.root, null, [-.061, .15, 0], 8);
     this.blockFull = new THREE.Group(); this.blockCut = new THREE.Group(); this.block.add(this.blockFull, this.blockCut);
-    this.box([.018, .12, .421], m.cast, this.blockCut, [-.06, .155, 0]);
-    this.box([.018, .12, .421], m.cast, this.blockFull, [-.06, .155, 0]); this.box([.018, .12, .421], m.cast, this.blockFull, [.06, .155, 0]);
+    const sideWall = beveledPlate([
+      [-.209, .105], [-.188, .096], [.189, .096], [.209, .108],
+      [.211, .195], [.199, .208], [-.199, .208], [-.211, .195],
+    ], .016, .0016);
+    sideWall.rotateY(Math.PI / 2);
+    const rib = beveledPlate([[.065, .111], [.071, .116], [.0694, .176], [.065, .183]], .018, .0007);
+    for (const [shell, side] of [[this.blockCut, -1], [this.blockFull, -1], [this.blockFull, 1]]) {
+      this.mesh(sideWall, [m.cast, m.aluminum], shell, [side * .059, 0, 0]);
+      this.box([.018, .006, .413], m.cast, shell, [side * .061, .104, 0]);
+      this.box([.012, .0035, .410], m.aluminum, shell, [side * .064, .198, 0]);
+      for (let index = 0; index < 5; index++) {
+        const stiffener = this.mesh(rib, m.cast, shell, [0, 0, (index - 2) * .102]);
+        stiffener.rotation.y = side < 0 ? Math.PI : 0;
+      }
+    }
     for (let index = 0; index < 5; index++) {
       const z = -.208 + index * .104;
       this.box([.13, .008, .013], m.cast, this.blockCut, [0, .099, z]); this.box([.13, .008, .013], m.cast, this.blockFull, [0, .099, z]);
       this.box([.013, .106, .018], m.cast, this.blockCut, [-.059, .154, z]);
-      for (const x of [-.058, .058]) { this.bolt(this.blockFull, [x, .219, z]); this.bolt(this.blockCut, [x, .105, z]); }
+      this.bolt(this.blockCut, [-.058, .105, z]);
     }
     this.head = this.part('head', '실린더 헤드', '연소실 위에서 밸브 시트·가이드와 캠축 베어링을 지지합니다. 자체 제작한 대표 DOHC 형상입니다.', '알루미늄 합금', this.root, null, [-.056, .248, 0], 8);
     this.headFull = new THREE.Group(); this.headCut = new THREE.Group(); this.head.add(this.headFull, this.headCut);
-    this.box([.014, .05, .431], m.cast, this.headCut, [-.072, .25, 0]); this.box([.014, .05, .431], m.cast, this.headFull, [-.072, .25, 0]); this.box([.014, .05, .431], m.cast, this.headFull, [.072, .25, 0]);
     for (const z of [-.219, .219]) { this.box([.153, .038, .012], m.cast, this.headFull, [0, .251, z]); this.box([.081, .025, .012], m.cast, this.headCut, [-.033, .248, z]); }
     this.cover = this.part('cam-cover', '캠 커버', '캠축 위를 덮어 오일을 가두는 커버입니다. 절개에서는 내부를 관찰할 수 있도록 투명하게 표시합니다.', '알루미늄 합금 · 고무 개스킷', this.head, null, [0, .338, 0], 20);
-    this.coverSolid = this.box([.159, .024, .446], m.cast, this.cover, [0, .336, 0]);
-    this.coverGhost = this.box([.159, .024, .446], m.transparent, this.cover, [0, .336, 0]);
-    for (const x of [-.066, .066]) for (const z of [-.205, -.104, 0, .104, .205]) this.bolt(this.coverSolid, [x, .014, z]);
+    const coverOutline = [[-.060, -.223], [.060, -.223], [.079, -.207], [.079, .207], [.059, .223], [-.059, .223], [-.079, .207], [-.079, -.207]];
+    const lid = beveledPlate(coverOutline, .019, .003); lid.rotateX(-Math.PI / 2);
+    const flange = beveledPlate(coverOutline, .003, .0006); flange.rotateX(-Math.PI / 2);
+    this.coverSolid = this.mesh(lid, m.cast, this.cover, [0, .336, 0]);
+    this.mesh(flange, m.aluminum, this.coverSolid, [0, -.0098, 0]);
+    this.coverGhost = this.mesh(lid, m.transparent, this.cover, [0, .336, 0]);
+    const coverRib = beveledPlate([[-.007, -.195], [.007, -.195], [.007, .195], [-.007, .195]], .005, .0018);
+    coverRib.rotateX(-Math.PI / 2);
+    for (const x of [-.033, .033]) this.mesh(coverRib, [m.cast, m.aluminum], this.coverSolid, [x, .010, 0]);
+    for (const x of [-.066, .066]) for (const z of [-.205, -.104, 0, .104, .205]) this.bolt(this.coverSolid, [x, .0115, z]);
     this.crank = this.part('crankshaft', '크랭크축', '크랭크 핀의 원운동과 커넥팅로드가 피스톤 왕복운동을 연결합니다. 1·4번과 2·3번 핀은 180° 차이입니다.', '단조 강철', this.root, null, [0, 0, -.025], 1);
     this.crankRotating = new THREE.Group(); this.crank.add(this.crankRotating);
     this.crankShaftMesh = this.cylinder(.015, .494, m.polished, this.crankRotating, [0, 0, 0], 'z');
     this.crankJournals = []; this.bearingSupports = [];
     for (let index = 0; index < 5; index++) {
       const z = -.208 + index * .104;
-      this.crankJournals.push(this.cylinder(.022, .027, m.polished, this.crankRotating, [0, 0, z], 'z'));
+      const journal = new THREE.Group(); journal.position.z = z; this.crankRotating.add(journal); this.crankJournals.push(journal);
+      this.mesh(this.mainJournalGeometry, [m.polished, m.turned], journal);
+      if (index === 2) for (const side of [-1, 1]) this.ring(.022, .027, .0014, m.turned, journal, [0, 0, side * .0153]);
       const bearing = this.part(`main-bearing-${index + 1}`, `메인 베어링 ${index + 1}`, '위·아래로 분할된 미끄럼 베어링이 크랭크 저널을 감쌉니다. 위쪽 지지부는 블록에 연결되고 아래 캡은 볼트로 고정됩니다.', '다층 베어링 합금 · 강철', this.root, null, [.024, 0, z], 18);
       this.ring(.0223, .0254, .025, m.bronze, bearing, [0, 0, z], 'z', Math.PI, Math.PI);
       this.ring(.0223, .0254, .025, m.bronze, bearing, [0, 0, z], 'z', 0, Math.PI);
@@ -148,7 +264,7 @@ export class EngineScene {
         const z = -.208 + index * .104;
         const support = new THREE.Group(); group.add(support); supports.push(support);
         this.ring(.0091, .013, .013, m.bronze, support, [c[0], c[1], z]);
-        this.mesh(annulus(.013, .018, .018, 0, Math.PI), m.cast, support, [c[0], c[1], z]);
+        this.mesh(annulus(.013, .018, .018, 0, Math.PI), [m.aluminum, m.cast], support, [c[0], c[1], z]);
         const lowerSaddle = this.mesh(annulus(.013, .018, .018, Math.PI, Math.PI), m.cast, support, [c[0], c[1], z]); lowerSaddle.userData.headSupport = true;
         for (const offset of [-.022, .022]) { const pedestal = this.box([.012, .066, .018], m.cast, support, [c[0] + offset, .253, z]); pedestal.userData.headSupport = true; }
         for (const offset of [-.022, .022]) this.bolt(support, [c[0] + offset, c[1] + .003, z]);
@@ -190,16 +306,26 @@ export class EngineScene {
       this.cylinder(.0019, .023, m.polished, rod, [xx, .001, 0]); this.bolt(rod, [xx, -.012, 0], 'y', .8);
     }
     const crankThrow = new THREE.Group(); crankThrow.rotation.z = FIRING_PHASES[index]; this.crankRotating.add(crankThrow);
-    const crankPinMesh = this.cylinder(.0133, .026, m.polished, crankThrow, [0, .043, z], 'z');
+    const crankPinMesh = this.mesh(this.crankPinGeometry, [m.polished, m.turned], crankThrow, [0, .043, z]);
     for (const zz of [z - .021, z + .021]) {
-      this.mesh(crankCheekGeometry(), [m.steel, m.darkSteel], crankThrow, [0, 0, zz]);
+      this.mesh(this.cheekGeometry, [m.turned, m.darkSteel], crankThrow, [0, 0, zz]);
     }
     const crankOil = this.tube(crankOilPassage(index), .00135, m.oil, crankThrow, false).mesh; crankOil.userData.partId = 'oil-gallery'; crankOil.renderOrder = 4;
     const liner = this.part(`c${number}-liner`, `${number}번 실린더 라이너`, '피스톤이 왕복하는 원통면입니다. 절개에서는 절반을 제거하고 절단면을 밝게 표시합니다.', '내마모 주철', group, number, [-.043, .168, z], 14);
-    const linerFull = this.ring(.043, .0485, .116, [m.cut, m.polished], liner, [0, .157, z], 'y');
-    const linerCut = this.ring(.043, .0485, .116, [m.cut, m.polished], liner, [0, .157, z], 'y', Math.PI / 2, Math.PI);
-    const headRingFull = this.ring(.0415, .059, .012, [m.cut, m.cast], this.headFull, [0, .220, z], 'y');
-    const headRingCut = this.ring(.0415, .059, .012, [m.cut, m.cast], this.headCut, [0, .220, z], 'y', Math.PI / 2, Math.PI);
+    const linerFull = this.mesh(this.linerGeometries[0], [m.cut, m.honed, m.cast], liner, [0, .157, z]);
+    const linerCut = this.mesh(this.linerGeometries[1], [m.cut, m.honed, m.cast], liner, [0, .157, z]);
+    const blockDeck = new THREE.Group(); this.block.add(blockDeck); blockDeck.position.z = z;
+    const decks = [false, true].map(cut => {
+      const deck = new THREE.Group(); blockDeck.add(deck);
+      this.mesh(this.deckGeometries[Number(cut)], [m.aluminum, cut ? m.cut : m.cast], deck, [0, GEOMETRY.deckY - .009, 0]);
+      for (const x of cut ? [-.057] : [-.057, .057]) {
+        this.ring(.0038, .0058, .0013, m.turned, deck, [x, GEOMETRY.deckY + .0002, .041], 'y');
+        this.ring(.0035, .0048, .001, m.darkSteel, deck, [x, GEOMETRY.deckY - .0004, -.023], 'y');
+      }
+      return deck;
+    });
+    const headRingFull = this.buildHeadPod(this.headFull, z, false);
+    const headRingCut = this.buildHeadPod(this.headCut, z, true);
     headRingFull.userData.cylinder = number; headRingCut.userData.cylinder = number;
     const valves = {};
     for (const kind of ['intake', 'exhaust']) {
@@ -208,31 +334,35 @@ export class EngineScene {
       for (const pair of [-1, 1]) {
         const geometry = valveGeometry(kind, z, pair), n = vec(geometry.n);
         const moving = new THREE.Group(); moving.position.copy(vec(geometry.seat)); moving.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n); valveGroup.add(moving);
-        this.cylinder(.011, .0025, m.polished, moving, [0, .00125, 0]);
-        this.mesh(new THREE.ConeGeometry(.009, .004, 32), m.steel, moving, [0, .004, 0]);
-        this.cylinder(.0026, .030, m.polished, moving, [0, .018, 0]);
+        this.mesh(this.valveFaceGeometry, [m.turned, m.steel], moving);
+        this.cylinder(.00245, .026, m.polished, moving, [0, .019, 0]);
         this.cylinder(.011, .004, m.polished, moving, [0, .032, 0]);
-        this.ring(.003, .008, .002, m.darkSteel, moving, [0, .027, 0], 'y');
+        this.ring(.0025, .0084, .002, m.darkSteel, moving, [0, .027, 0], 'y');
+        this.ring(.0025, .0042, .0025, m.bronze, moving, [0, .029, 0], 'y');
         const guide = new THREE.Group(); guide.position.copy(vec(geometry.seat)); guide.quaternion.copy(moving.quaternion); valveGroup.add(guide);
         this.ring(.0027, .005, .015, m.bronze, guide, [0, .010, 0], 'y');
-        this.ring(.0098, .0125, .002, m.bronze, guide, [0, 0, 0], 'y');
+        this.mesh(this.valveSeatGeometry, [m.polished, m.bronze], guide);
+        this.ring(.005, .0085, .0014, m.darkSteel, guide, [0, SPRING_BOTTOM - .0007, 0], 'y');
         const spring = new THREE.Group(); spring.position.copy(vec(geometry.seat)); spring.quaternion.copy(moving.quaternion); valveGroup.add(spring);
-        const points = []; for (let step = 0; step <= 120; step++) { const angle = step / 120 * TAU * 5.5; points.push([Math.cos(angle) * .0068, step / 120 * .019, Math.sin(angle) * .0068]); }
-        const springCurve = new THREE.CatmullRomCurve3(points.map(vec)); const springMesh = this.mesh(new THREE.TubeGeometry(springCurve, 120, .00075, 6, false), m.steel, spring);
-        const cam = this.mesh(createCamGeometry(kind), m.polished, this.cams[kind].group, geometry.center); cam.userData.cylinder = number;
+        const points = []; for (let step = 0; step <= 96; step++) { const angle = step / 96 * TAU * 5; points.push([Math.cos(angle) * .0068, step / 96 * SPRING_HEIGHT, Math.sin(angle) * .0068]); }
+        const springCurve = new THREE.CatmullRomCurve3(points.map(vec)); const springMesh = this.mesh(new THREE.TubeGeometry(springCurve, 96, .00065, 6, false), m.steel, spring);
+        const cam = this.mesh(this.camProfiles[kind], [m.turned, m.polished], this.cams[kind].group, geometry.center); cam.userData.cylinder = number;
         this.cams[kind].lobes.push({ mesh: cam, alpha: geometry.alpha, index });
-        instances.push({ geometry, moving, guide, spring, springMesh });
+        instances.push({ geometry, moving, guide, springMesh, flow: this.buildValveFlow(kind, geometry, valveGroup, guide, pair) });
       }
       valves[kind] = { group: valveGroup, instances };
     }
     const spark = this.part(`c${number}-spark-plug`, `${number}번 점화 플러그`, '압축 상사점 근처의 점화 위치를 표시합니다. 불빛은 행정 안내이며 연소 압력 계산이 아닙니다.', '세라믹 · 니켈 합금', group, number, [0, .277, z], 12);
-    this.cylinder(.0045, .026, m.ceramic, spark, [0, .263, z]); this.cylinder(.006, .012, m.steel, spark, [0, .243, z], 'y', 6); this.cylinder(.002, .011, m.polished, spark, [0, .231, z]);
+    this.cylinder(.0045, .026, m.ceramic, spark, [0, .263, z]); this.cylinder(.006, .012, m.steel, spark, [0, .243, z], 'y', 6); this.cylinder(.003, .014, m.polished, spark, [0, .229, z]);
+    this.cylinder(.0007, .004, m.steel, spark, [0, .220, z], 'y', 12);
+    this.rodBetween([.0023, .222, z], [.0023, .2174, z], .00055, m.steel, spark, 8);
+    this.rodBetween([.0023, .2174, z], [.0001, .2174, z], .00055, m.steel, spark, 8);
     for (let k = 0; k < 4; k++) this.cylinder(.0052, .0015, m.ceramic, spark, [0, .259 + k * .0035, z]);
     const flashMaterial = this.material({ color: '#ffcb81', emissive: '#ff8e31', emissiveIntensity: 2, transparent: true, opacity: .36, depthWrite: false });
-    const flash = this.mesh(new THREE.SphereGeometry(.008, 16, 12), flashMaterial, spark, [0, .218, z]);
+    const flash = this.mesh(new THREE.SphereGeometry(.004, 16, 12), flashMaterial, spark, [0, .2177, z]); flash.userData.ignorePick = true;
     const gasMaterial = this.material({ color: '#69cbd5', emissive: '#69cbd5', emissiveIntensity: .08, transparent: true, opacity: .055, depthWrite: false, side: THREE.DoubleSide });
-    const gas = this.mesh(new THREE.CylinderGeometry(.0405, .0405, 1, 40), gasMaterial, group, [0, .2, z]); gas.castShadow = false;
-    this.cylinders.push({ number, z, group, piston, pistonBody, rings, pin, pinMesh, rod, rodSmallEnd, rodBigEnd, crankPinMesh, liner, linerFull, linerCut, valves, spark, flash, gas, headRingFull, headRingCut, crankThrow, crankOil });
+    const gas = this.mesh(this.chamberGeometry, gasMaterial, group, [0, .2, z]); gas.userData.ignorePick = true;
+    this.cylinders.push({ number, z, group, piston, pistonBody, rings, pin, pinMesh, rod, rodSmallEnd, rodBigEnd, crankPinMesh, liner, linerFull, linerCut, valves, spark, flash, gas, headRingFull, headRingCut, blockDeck, decks, crankThrow, crankOil });
   }
 
   buildTiming() {
@@ -241,18 +371,32 @@ export class EngineScene {
     this.sprockets = [];
     for (const [kind, center, radius, teeth] of [['crank', [0, 0, z], .02075, 18], ['intake', [...this.cams.intake.center.slice(0, 2), z], .0415, 36], ['exhaust', [...this.cams.exhaust.center.slice(0, 2), z], .0415, 36]]) {
       const gear = new THREE.Group(); gear.position.set(...center); this.timing.add(gear);
-      this.mesh(sprocketGeometry(teeth, radius, .007), m.steel, gear);
-      this.ring(radius * .28, radius * .63, .008, m.darkSteel, gear, [0, 0, 0]);
-      for (let k = 0; k < 6; k++) { const a = k / 6 * TAU; this.cylinder(radius * .072, .0085, m.black, gear, [Math.cos(a) * radius * .48, Math.sin(a) * radius * .48, -.001], 'z', 12); }
-      this.cylinder(radius * .25, .015, m.polished, gear, [0, 0, 0], 'z', 6);
-      this.box([radius * .09, radius * .16, .001], m.bronze, gear, [0, radius * .78, -.0048]);
-      this.sprockets.push({ kind, gear });
+      this.mesh(sprocketGeometry(teeth, radius, .007), [m.turned, m.steel], gear);
+      this.ring(radius * .57, radius * .82, .0015, m.darkSteel, gear, [0, 0, -.0039]);
+      this.ring(radius * .65, radius * .675, .001, m.turned, gear, [0, 0, -.0046]);
+      const hub = new THREE.Group(); gear.add(hub);
+      this.ring(radius * .21, radius * .53, .003, m.aluminum, hub, [0, 0, -.0044]);
+      for (let k = 0; k < 6; k++) {
+        const a = k / 6 * TAU, x = Math.cos(a) * radius * .40, y = Math.sin(a) * radius * .40;
+        this.bolt(hub, [x, y, -.006], 'z', radius > .03 ? .52 : .32);
+      }
+      this.bolt(hub, [0, 0, -.0075], 'z', radius > .03 ? 1.6 : 1.15);
+      this.box([radius * .045, radius * .11, .0008], m.bronze, gear, [0, radius * .76, -.0051]);
+      if (kind === 'intake') this.box([radius * .043, radius * .10, .0009], m.polished, hub, [0, radius * .51, -.0061]);
+      this.sprockets.push({ kind, gear, hub });
     }
-    this.chainPath = timingPath(); this.chainCount = Math.ceil(this.chainPath.total / .007);
-    const linkGeometry = new THREE.BoxGeometry(.0062, .0027, .0014); this.geometries.add(linkGeometry);
-    this.chainLinks = new THREE.InstancedMesh(linkGeometry, m.darkSteel, this.chainCount * 2); this.chainLinks.castShadow = true; this.chainLinks.userData.partId = 'timing-chain'; this.timing.add(this.chainLinks);
-    const pinGeometry = new THREE.CylinderGeometry(.00155, .00155, .009, 8); pinGeometry.rotateX(Math.PI / 2); this.geometries.add(pinGeometry);
-    this.chainPins = new THREE.InstancedMesh(pinGeometry, m.polished, this.chainCount); this.chainPins.userData.partId = 'timing-chain'; this.timing.add(this.chainPins);
+    this.chainPath = timingPath(); this.chainCount = 2 * Math.ceil(this.chainPath.total / .014);
+    const linkGeometry = chainPlateGeometry(); this.geometries.add(linkGeometry);
+    this.chainLinks = new THREE.InstancedMesh(linkGeometry, m.darkSteel, this.chainCount * 2); this.chainLinks.castShadow = true; this.chainLinks.receiveShadow = true; this.chainLinks.userData.partId = 'timing-chain'; this.timing.add(this.chainLinks);
+    const pinGeometry = new THREE.CylinderGeometry(.00125, .00125, .0096, 10); pinGeometry.rotateX(Math.PI / 2); this.geometries.add(pinGeometry);
+    this.chainPins = new THREE.InstancedMesh(pinGeometry, m.turned, this.chainCount); this.chainPins.userData.partId = 'timing-chain'; this.timing.add(this.chainPins);
+    const rollerGeometry = new THREE.CylinderGeometry(.00185, .00185, .0058, 12); rollerGeometry.rotateX(Math.PI / 2); this.geometries.add(rollerGeometry);
+    this.chainRollers = new THREE.InstancedMesh(rollerGeometry, m.steel, this.chainCount); this.chainRollers.userData.partId = 'timing-chain'; this.timing.add(this.chainRollers);
+    const plateColor = new THREE.Color();
+    for (let index = 0; index < this.chainCount; index++) {
+      plateColor.setHex(index % 2 === 0 ? 0xb2c3c9 : 0xf1f5f6);
+      this.chainLinks.setColorAt(index * 2, plateColor); this.chainLinks.setColorAt(index * 2 + 1, plateColor);
+    }
     this.chainDummy = new THREE.Object3D();
     this.guides = this.part('timing-guide', '체인 가이드 · 텐셔너', '긴 체인 구간의 경로를 안내하고 느슨함을 억제하는 대표 고정 가이드와 텐셔너입니다.', '강철 지지대 · 내열 수지', this.root, null, [-.071, .16, z], 17);
     this.tube([[-.036, .055, z], [-.055, .139, z], [-.069, .222, z]], .0041, m.black, this.guides);
@@ -305,7 +449,7 @@ export class EngineScene {
     for (const path of paths) {
       const item = this.tube(path.points, .00135, this.mat.oil, this.oil, !path.straight); item.mesh.renderOrder = 4; item.mesh.userData.partId = 'oil-gallery'; this.oilRoutes.push(item.curve);
       const count = item.curve.getLength() > .15 ? 2 : 1;
-      for (let k = 0; k < count; k++) { const mesh = this.mesh(new THREE.SphereGeometry(.0019, 8, 6), this.mat.oil, this.oil); mesh.renderOrder = 5; mesh.userData.partId = 'oil-gallery'; this.oilParticles.push({ mesh, route: item.curve, phase: k / count }); }
+      for (let k = 0; k < count; k++) { const mesh = this.mesh(new THREE.SphereGeometry(.002, 8, 6), this.mat.oilMarker, this.oil); mesh.renderOrder = 5; mesh.userData.partId = 'oil-gallery'; this.oilParticles.push({ mesh, route: item.curve, phase: k / count }); }
     }
   }
 
@@ -321,7 +465,7 @@ export class EngineScene {
 
   buildStage() {
     this.stage = new THREE.Group(); this.scene.add(this.stage);
-    const material = this.material({ color: '#1d2c36', metalness: .28, roughness: .68 });
+    const material = this.material({ color: '#141e27', metalness: .04, roughness: .85 });
     this.floor = this.mesh(new THREE.PlaneGeometry(12, 12), material, this.stage, [0, -.133, 0]); this.floor.rotation.x = -Math.PI / 2; this.floor.castShadow = false;
     const platform = this.mesh(new THREE.CylinderGeometry(.37, .385, .017, 96), this.material({ color: '#2b3b45', metalness: .65, roughness: .47 }), this.stage, [0, -.122, 0]); platform.receiveShadow = true;
     this.ring(.361, .363, .0008, this.mat.darkSteel, this.stage, [0, -.113, 0], 'y');
@@ -339,14 +483,15 @@ export class EngineScene {
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline'); this.leaders.append(line); this.labelLayer.append(button); this.labels.set(component.id, { button, line });
     }
     this.status = document.createElement('div'); this.status.className = 'engine-scene-status';
+    this.liftStatus = document.createElement('div'); this.liftStatus.className = 'engine-scene-lift';
     this.note = document.createElement('div'); this.note.className = 'engine-scene-note'; this.note.textContent = '드래그 회전 · 휠 확대 · 부품 클릭';
-    this.container.append(this.leaders, this.labelLayer, this.status, this.note);
+    this.container.append(this.leaders, this.labelLayer, this.status, this.liftStatus, this.note);
   }
 
-  update(snapshot, view = {}) {
+  update(snapshot, view = {}, settings = {}) {
     if (this.disposed || !snapshot) return;
     this.restoreVisibilityMask();
-    this.snapshot = snapshot; const previousMode = this.view.cylinderMode;
+    this.snapshot = snapshot; this.updateIntakeProfile(settings);
     this.view = { ...DEFAULT_VIEW, ...view, layers: { ...DEFAULT_VIEW.layers, ...view.layers } };
     const v = this.view, selectedCylinder = clamp(Number(v.selectedCylinder) || 1, 1, 4), single = v.cylinderMode === 'single', cut = v.mode !== 'assembled', exploded = v.mode === 'exploded' ? clamp(Number(v.explode) || 0, 0, 1) : 0;
     const selectedZ = (selectedCylinder - 2.5) * .104;
@@ -355,7 +500,7 @@ export class EngineScene {
     this.block.visible = Boolean(v.layers.block); this.head.visible = Boolean(v.layers.head); this.blockFull.visible = !cut; this.blockCut.visible = cut;
     this.headFull.visible = !cut; this.headCut.visible = cut; this.coverSolid.visible = !cut; this.coverGhost.visible = cut;
     this.block.position.x = -exploded * .09; this.head.position.y = exploded * .055; this.cover.position.y = exploded * .035;
-    this.block.scale.z = single ? .27 : 1; this.block.position.z = single ? selectedZ : 0;
+    for (const shell of [this.blockFull, this.blockCut]) { shell.scale.z = single ? .27 : 1; shell.position.z = single ? selectedZ : 0; }
     for (const enclosure of [this.headFull, this.headCut]) for (const mesh of enclosure.children) if (!mesh.userData.cylinder) mesh.visible = !single;
     for (const mesh of [this.coverSolid, this.coverGhost]) { mesh.scale.z = single ? .27 : 1; mesh.position.z = single ? selectedZ : 0; }
     this.pan.scale.z = single ? .27 : 1; this.pan.position.z = single ? selectedZ : 0;
@@ -385,18 +530,42 @@ export class EngineScene {
       cylinder.piston.position.x += exploded * .065; cylinder.rings.position.x = exploded * .035; cylinder.pin.position.z = -exploded * .05;
       cylinder.liner.visible = Boolean(v.layers.block); cylinder.linerFull.visible = !cut; cylinder.linerCut.visible = cut;
       cylinder.liner.position.x = -exploded * .04;
+      cylinder.blockDeck.visible = cylinder.group.visible;
+      cylinder.decks[0].visible = !cut; cylinder.decks[1].visible = cut;
       cylinder.headRingFull.visible = !single || cylinder.number === selectedCylinder; cylinder.headRingCut.visible = !single || cylinder.number === selectedCylinder;
+      const showChamber = cut && exploded === 0;
+      const isObserved = cylinder.number === selectedCylinder;
       for (const kind of ['intake', 'exhaust']) {
         const lift = sample.valveLifts[kind]; const valve = cylinder.valves[kind]; valve.group.position.y = exploded * .035;
         for (const instance of valve.instances) {
           instance.moving.position.copy(vec(instance.geometry.seat)).addScaledVector(vec(instance.geometry.n), -lift);
-          instance.springMesh.position.y = .008; instance.springMesh.scale.y = (.019 - lift) / .019;
+          instance.springMesh.position.y = SPRING_BOTTOM; instance.springMesh.scale.y = (SPRING_HEIGHT - lift) / SPRING_HEIGHT;
+          const { gap, markers, route } = instance.flow;
+          gap.visible = showChamber && isObserved && lift > 0;
+          gap.position.y = -lift / 2;
+          gap.scale.y = lift;
+          const showRoute = gap.visible && sample.stroke === kind;
+          for (let index = 0; index < markers.length; index++) {
+            const marker = markers[index];
+            marker.visible = showRoute;
+            if (!showRoute) continue;
+            const progress = (sample.phaseRad / Math.PI * 2 + index / markers.length) % 1;
+            marker.position.copy(route.getPointAt(kind === 'intake' ? progress : 1 - progress));
+            marker.material.opacity = .2 + .43 * Math.sqrt(lift / GEOMETRY.valveMaxLift);
+          }
         }
       }
       cylinder.spark.position.y = exploded * .035;
       const stroke = STROKES[sample.stroke] || STROKES.power; cylinder.gas.material.color.setHex(stroke[1]); cylinder.gas.material.emissive.setHex(stroke[1]);
-      const crown = pin.y + .026, height = Math.max(.003, .217 - crown); cylinder.gas.position.set(0, crown + height / 2, cylinder.z); cylinder.gas.scale.y = height; cylinder.gas.visible = cut && exploded === 0;
-      cylinder.flash.visible = sample.phaseRad < .13 && cut && exploded === 0;
+      const crown = pin.y + GEOMETRY.pinToCrown, height = CHAMBER_ROOF - crown;
+      cylinder.gas.position.set(0, crown + height / 2, cylinder.z); cylinder.gas.scale.y = height; cylinder.gas.visible = showChamber;
+      const heat = sample.stroke === 'power' ? Math.exp(-sample.phaseRad * 1.3) : 0;
+      cylinder.gas.material.opacity = (isObserved ? .065 : .026) + heat * (isObserved ? .18 : .08);
+      cylinder.gas.material.emissiveIntensity = .06 + heat * .55;
+      const spark = sample.stroke === 'power' ? Math.max(0, 1 - sample.phaseRad / .13) : 0;
+      cylinder.flash.visible = showChamber && spark > 0;
+      cylinder.flash.material.opacity = spark * .64;
+      cylinder.flash.scale.setScalar(.45 + spark * .55);
     }
     for (const kind of ['intake', 'exhaust']) {
       const cam = this.cams[kind]; cam.group.position.y = exploded * .035;
@@ -407,22 +576,30 @@ export class EngineScene {
       for (const support of cam.supports) for (const mesh of support.children) if (mesh.userData.headSupport) mesh.visible = Boolean(v.layers.head);
       for (const lobe of cam.lobes) { lobe.mesh.rotation.z = lobe.alpha - snapshot.camAngles[kind] + FIRING_PHASES[lobe.index] / 2; lobe.mesh.visible = !single || lobe.index + 1 === selectedCylinder; }
     }
-    for (const { kind, gear } of this.sprockets) gear.rotation.z = kind === 'crank' ? -angle : -angle / 2;
-    this.pumpRotor.rotation.z = -angle;
-    // The chain loop is periodic in one link pitch, avoiding a seam when the 720° angle wraps.
-    const pitch = this.chainPath.total / this.chainCount, travel = -(angle / TAU * 18 % 1) * pitch;
-    for (let index = 0; index < this.chainCount; index++) {
-      const point = this.chainPath.sample(index * pitch + travel); this.chainDummy.position.set(point.x, point.y, -.239); this.chainDummy.rotation.set(0, 0, point.angle); this.chainDummy.updateMatrix(); this.chainPins.setMatrixAt(index, this.chainDummy.matrix);
-      for (let side = 0; side < 2; side++) { this.chainDummy.position.z = -.239 + (side ? .004 : -.004); this.chainDummy.updateMatrix(); this.chainLinks.setMatrixAt(index * 2 + side, this.chainDummy.matrix); }
+    for (const { kind, gear, hub } of this.sprockets) {
+      gear.rotation.z = kind === 'crank' ? -angle : -angle / 2;
+      if (kind === 'intake') hub.rotation.z = -snapshot.camAngles.intake - gear.rotation.z;
     }
-    this.chainLinks.instanceMatrix.needsUpdate = true; this.chainPins.instanceMatrix.needsUpdate = true;
+    this.pumpRotor.rotation.z = -angle;
+    // Inner and outer plates repeat every two pitches; 720° advances 36 pitches.
+    const pitch = this.chainPath.total / this.chainCount, travel = -(angle / TAU * 18 % 2) * pitch;
+    for (let index = 0; index < this.chainCount; index++) {
+      const point = this.chainPath.sample(index * pitch + travel), next = this.chainPath.sample((index + 1) * pitch + travel);
+      this.chainDummy.position.set(point.x, point.y, -.239); this.chainDummy.rotation.set(0, 0, 0); this.chainDummy.updateMatrix();
+      this.chainPins.setMatrixAt(index, this.chainDummy.matrix); this.chainRollers.setMatrixAt(index, this.chainDummy.matrix);
+      const platesZ = index % 2 === 0 ? .0038 : .0026;
+      this.chainDummy.rotation.z = Math.atan2(next.y - point.y, next.x - point.x);
+      this.chainDummy.position.set((point.x + next.x) / 2, (point.y + next.y) / 2, -.239);
+      for (let side = 0; side < 2; side++) { this.chainDummy.position.z = -.239 + (side ? platesZ : -platesZ); this.chainDummy.updateMatrix(); this.chainLinks.setMatrixAt(index * 2 + side, this.chainDummy.matrix); }
+    }
+    this.chainLinks.instanceMatrix.needsUpdate = true; this.chainPins.instanceMatrix.needsUpdate = true; this.chainRollers.instanceMatrix.needsUpdate = true;
     for (const particle of this.oilParticles) particle.mesh.position.copy(particle.route.getPointAt((angle / (Math.PI * 4) + particle.phase) % 1));
     this.root.updateMatrixWorld(true);
     if (this.selectedId !== v.selectedPart) this.highlight(v.selectedPart);
     const current = samples[selectedCylinder - 1], phase = current?.phaseRad ?? 0;
-    this.status.textContent = `${single ? `${selectedCylinder}번 확대` : '직렬 4기통'} · ${selectedCylinder}번 ${STROKES[current?.stroke]?.[0] || ''} · ${Math.round(phase * 180 / Math.PI)}°`;
-    this.note.hidden = !exploded && !v.layers.lubrication;
-    this.note.textContent = exploded && v.layers.lubrication ? '분해 위치는 관찰용 · 금색은 조립 상태의 내부 오일 경로' : exploded ? '분해 위치는 관찰용 · 조립 상태에서 캠 접촉 확인' : '금색: 내부 오일 통로 투시 · 대표 연결 · 유량 계산 아님';
+    this.status.textContent = `${single ? `${selectedCylinder}번 확대` : '직렬 4기통'} · ${single ? '' : `${selectedCylinder}번 `}${STROKES[current?.stroke]?.[0] || ''} · ${Math.round(phase * 180 / Math.PI)}°`;
+    this.liftStatus.textContent = current ? `밸브 리프트  흡기 ${(current.valveLifts.intake * 1000).toFixed(2)} · 배기 ${(current.valveLifts.exhaust * 1000).toFixed(2)} mm` : '';
+    this.updateSceneNote();
     if (this.inspection) {
       const component = this.components.get(this.inspection.partId);
       // Explicit inspection can temporarily reveal a disabled layer. Subsequent
@@ -438,6 +615,15 @@ export class EngineScene {
       }
     }
     this.needsRender = true;
+  }
+  updateSceneNote() {
+    const { mode, layers } = this.view;
+    const notes = [];
+    if (mode === 'exploded') notes.push('분해 간격은 관찰용');
+    if (mode === 'cutaway') notes.push('연소실 색상은 행정 표시 · 흡·배기 점은 이동 방향 예시');
+    if (layers.lubrication) notes.push('금색은 조립 상태 오일 경로 예시');
+    this.note.hidden = notes.length === 0;
+    this.note.textContent = notes.join(' / ');
   }
 
   inspectionScope() { return JSON.stringify([this.view.cylinderMode, this.view.selectedCylinder, this.view.layers]); }
@@ -461,6 +647,7 @@ export class EngineScene {
     this.note.textContent = /-pin$/.test(component.id) ? '중공 피스톤 핀 · 핀 보스와 로드 작은 끝을 연결하는 대표 형상'
       : /-rings$/.test(component.id) ? '압축 링 2개·오일 링 1개 · 끝 간극과 링 홈의 대표 형상 · 밀봉 해석 아님'
       : /piston/.test(component.id) ? '대표 피스톤 구조 · 링 홈·중공 크라운·핀 보스 · 제작 도면 아님'
+      : /-liner$/.test(component.id) ? `교차 호닝 무늬의 간격은 관찰용 · 실린더 내경은 ${D.bore * 1000} mm`
       : /rod|crankshaft|bearing/.test(component.id) ? '대표 가공 구조 · 중심 거리와 운동 치수 유지 · 응력·강도 계산 아님'
       : '선택 부품 확대 · 전체 구조 복귀 시 이전 시점과 현재 표시 설정 적용';
   }
@@ -487,7 +674,7 @@ export class EngineScene {
     if (!this.inspection) return false;
     const saved = this.inspection; this.restoreVisibilityMask(); this.inspection = null;
     this.restoreCameraState(saved.camera); this.lastPresetFit = saved.preset;
-    this.note.hidden = this.view.mode !== 'exploded' && !this.view.layers.lubrication;
+    this.updateSceneNote();
     this.needsRender = true; return true;
   }
 
@@ -496,7 +683,7 @@ export class EngineScene {
     this.highlighted = []; this.selectedId = id;
     const component = this.components.get(id); if (!component) return;
     component.node.traverse(mesh => {
-      if (!mesh.isMesh) return; const original = mesh.material, list = Array.isArray(original) ? original : [original];
+      if (!mesh.isMesh || mesh.userData.ignorePick) return; const original = mesh.material, list = Array.isArray(original) ? original : [original];
       const material = list.map(value => { const copy = value.clone(); copy.emissive.set('#477a72'); copy.emissiveIntensity = .20; return copy; });
       mesh.material = Array.isArray(original) ? material : material[0]; this.highlighted.push({ mesh, original, material });
     });
@@ -529,7 +716,7 @@ export class EngineScene {
     const rect = this.renderer.domElement.getBoundingClientRect(); this.pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
     this.raycaster.setFromCamera(this.pointer, this.camera);
     for (const hit of this.raycaster.intersectObject(this.root, true)) {
-      if (!this.isVisible(hit.object) || !hit.object.userData.partId || hit.object.material?.transparent && hit.object.material.opacity < .2) continue;
+      if (!this.isVisible(hit.object) || hit.object.userData.ignorePick || !hit.object.userData.partId || hit.object.material?.transparent && hit.object.material.opacity < .2) continue;
       this.onSelect(hit.object.userData.partId); return;
     }
   }
@@ -588,6 +775,6 @@ export class EngineScene {
     this.root.traverse(node => { if (node.isInstancedMesh) node.dispose(); });
     for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose();
     for (const texture of this.textures) texture.dispose();
-    this.environment.dispose(); this.renderer.dispose(); this.renderer.domElement.remove(); this.labelLayer.remove(); this.leaders.remove(); this.status.remove(); this.note.remove();
+    this.environment.dispose(); this.renderer.dispose(); this.renderer.domElement.remove(); this.labelLayer.remove(); this.leaders.remove(); this.status.remove(); this.liftStatus.remove(); this.note.remove();
   }
 }
