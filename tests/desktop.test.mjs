@@ -121,7 +121,19 @@ async function launch() {
   await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setTitle('Engine Lab · 자동 검사'); window.focus(); });
 }
 async function closeNormally() {
-  await app.close(); app = null; page = null;
+  const current = app;
+  let timeout;
+  try {
+    await Promise.race([current.close(), new Promise((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error('Timed out: native app did not close normally')), 15000);
+    })]);
+  } catch (error) {
+    current.process().kill();
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    app = null; page = null;
+  }
   await waitFor(() => processes.at(-1).exited, 'normal native process exit');
   assert.equal(processes.at(-1).code, 0); assert.equal(processes.at(-1).signal, null);
 }
@@ -418,8 +430,7 @@ try {
     await waitFor(() => app.evaluate(() => globalThis.engineSaveCalls === 1), 'canceled recovery dialog');
     await assert.rejects(fs.access(target), { code: 'ENOENT' });
     await saveDialog(target);
-    await page.locator('#recover-original').click();
-    await waitFor(() => fs.readFile(target, 'utf8').then(value => value === raw, () => false), 'native original recovery');
+    await freshToast(() => page.locator('#recover-original').click(), '저장 원문을 파일로 보관했습니다');
     assert.equal(await fs.readFile(target, 'utf8'), raw);
     assert.ok(await page.evaluate(value => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === value), raw));
   });

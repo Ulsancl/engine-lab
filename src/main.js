@@ -390,8 +390,10 @@ try {
   $('#recover-original').addEventListener('click', async () => {
     if (recoveredRaw === null) return;
     try {
-      if (desktop) await desktop.saveRecovery(recoveredRaw);
-      else downloadText(recoveredRaw, '엔진-저장원문.txt', 'text/plain');
+      if (desktop) {
+        const result = await desktop.saveRecovery(recoveredRaw);
+        if (!result.canceled) toast('저장 원문을 파일로 보관했습니다.');
+      } else downloadText(recoveredRaw, '엔진-저장원문.txt', 'text/plain');
     } catch (error) { toast(`원문을 보관하지 못했습니다. ${error.message}`); }
   });
   $('#dismiss-recovery').addEventListener('click', () => {
