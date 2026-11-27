@@ -10,9 +10,11 @@ import './scene.css';
 const TAU = Math.PI * 2;
 const vec = values => new THREE.Vector3(...values);
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const STAGE_BACKDROP = '#18242e';
+const COMPACT_SCENE_WIDTH = 600;
 const DEFAULT_VIEW = { cylinderMode: 'all', selectedCylinder: 1, mode: 'cutaway', explode: .35, labels: true, layers: { block: true, head: true, timing: true, lubrication: false }, selectedPart: 'c1-piston' };
 const STROKES = { power: ['팽창', 0xefb56e], exhaust: ['배기', 0xd88073], intake: ['흡기', 0x63c6df], compression: ['압축', 0xb4a0dd] };
-const PORT_COLORS = { intake: 0x64cced, exhaust: 0xe99a6b };
+const PORT_COLORS = { intake: 0x69deff, exhaust: 0xff9b76 };
 const SPRING_BOTTOM = .013;
 const SPRING_HEIGHT = .013;
 const CHAMBER_ROOF = .218;
@@ -22,7 +24,9 @@ export class EngineScene {
     this.container = container; this.onSelect = onSelect; this.view = { ...DEFAULT_VIEW, layers: { ...DEFAULT_VIEW.layers } };
     this.components = new Map(); this.cylinders = []; this.staticMeshes = []; this.materials = new Set(); this.geometries = new Set(); this.textures = new Set(); this.highlighted = []; this.disposed = false;
     container.classList.add('engine-scene');
-    this.scene = new THREE.Scene(); this.scene.background = new THREE.Color('#18242e'); this.scene.fog = new THREE.Fog('#18242e', 1.7, 4.5);
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(STAGE_BACKDROP);
+    this.scene.fog = new THREE.Fog(STAGE_BACKDROP, 1.2, 3.4);
     this.camera = new THREE.PerspectiveCamera(37, 1, .005, 12);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
@@ -44,9 +48,13 @@ export class EngineScene {
     this.root = new THREE.Group(); this.scene.add(this.root);
     this.createMaterials(); this.buildEngine(); this.buildStage(); this.buildOverlay();
     this.raycaster = new THREE.Raycaster(); this.pointer = new THREE.Vector2();
-    this.pointerDown = event => { this.down = { x: event.clientX, y: event.clientY }; };
+    this.pointerDown = event => {
+      this.down = event.isPrimary && event.button === 0 ? { id: event.pointerId, x: event.clientX, y: event.clientY } : null;
+    };
     this.pointerUp = event => this.pick(event);
+    this.pointerCancel = () => { this.down = null; };
     this.renderer.domElement.addEventListener('pointerdown', this.pointerDown); this.renderer.domElement.addEventListener('pointerup', this.pointerUp);
+    this.renderer.domElement.addEventListener('pointercancel', this.pointerCancel);
     this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container); this.resize(); this.setCameraPreset('iso');
     this.needsRender = true; this.frame = requestAnimationFrame(() => this.animate());
   }
@@ -66,6 +74,7 @@ export class EngineScene {
       bronze: this.material({ color: '#b4a17c', metalness: .86, roughness: .3 }),
       black: this.material({ color: '#202c34', metalness: .35, roughness: .56 }),
       cut: this.material({ color: '#c8b693', metalness: .63, roughness: .36 }),
+      section: this.material({ color: '#a9bfcb', metalness: .48, roughness: .48, emissive: '#466978', emissiveIntensity: .16 }),
       honed: this.material({ color: '#87999e', metalness: .74, roughness: .53, map: hone, bumpMap: hone, bumpScale: .00025, roughnessMap: hone }),
       intake: this.material({ color: '#549cac', metalness: .65, roughness: .32 }),
       exhaust: this.material({ color: '#9c8070', metalness: .83, roughness: .4 }),
@@ -90,7 +99,7 @@ export class EngineScene {
     this.cheekGeometry = crankCheekGeometry();
     this.chamberGeometry = new THREE.CylinderGeometry(.0408, .0408, 1, 52, 1, true);
     this.curtainGeometry = new THREE.CylinderGeometry(.01065, .01065, 1, 36, 1, true);
-    this.gasMarkerGeometry = new THREE.SphereGeometry(.00215, 10, 8);
+    this.gasMarkerGeometry = new THREE.SphereGeometry(.0027, 10, 8);
   }
   mesh(geometry, material, parent, position = null) {
     this.geometries.add(geometry); const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = !material.transparent; mesh.receiveShadow = true;
@@ -147,7 +156,7 @@ export class EngineScene {
     const head = new THREE.Group(), m = this.mat;
     head.position.z = z;
     parent.add(head);
-    this.mesh(this.headDeckGeometries[Number(cut)], [m.cut, m.cast], head, [0, CHAMBER_ROOF, 0]);
+    this.mesh(this.headDeckGeometries[Number(cut)], cut ? [m.cut, m.section] : [m.cut, m.cast], head, [0, CHAMBER_ROOF, 0]);
     for (const kind of ['intake', 'exhaust']) {
       const sign = kind === 'intake' ? -1 : 1;
       if (!cut || kind === 'intake') {
@@ -175,11 +184,11 @@ export class EngineScene {
   }
   buildValveFlow(kind, geometry, group, guide, pair) {
     const color = PORT_COLORS[kind], transparent = { color, emissive: color, transparent: true, depthWrite: false, side: THREE.DoubleSide };
-    const gap = this.mesh(this.curtainGeometry, this.material({ ...transparent, opacity: .22, emissiveIntensity: .32 }), guide);
+    const gap = this.mesh(this.curtainGeometry, this.material({ ...transparent, opacity: .28, emissiveIntensity: .58 }), guide);
     gap.userData.ignorePick = true;
     const direction = Math.sign(geometry.seat[0]);
     const [x, y, z] = geometry.seat;
-    const markerMaterial = this.material({ ...transparent, opacity: .65, emissiveIntensity: .8 });
+    const markerMaterial = this.material({ ...transparent, opacity: .65, emissiveIntensity: 1.35 });
     const markers = Array.from({ length: 3 }, () => {
       const mesh = this.mesh(this.gasMarkerGeometry, markerMaterial, group);
       mesh.userData.ignorePick = true;
@@ -313,11 +322,11 @@ export class EngineScene {
     const crankOil = this.tube(crankOilPassage(index), .00135, m.oil, crankThrow, false).mesh; crankOil.userData.partId = 'oil-gallery'; crankOil.renderOrder = 4;
     const liner = this.part(`c${number}-liner`, `${number}번 실린더 라이너`, '피스톤이 왕복하는 원통면입니다. 절개에서는 절반을 제거하고 절단면을 밝게 표시합니다.', '내마모 주철', group, number, [-.043, .168, z], 14);
     const linerFull = this.mesh(this.linerGeometries[0], [m.cut, m.honed, m.cast], liner, [0, .157, z]);
-    const linerCut = this.mesh(this.linerGeometries[1], [m.cut, m.honed, m.cast], liner, [0, .157, z]);
+    const linerCut = this.mesh(this.linerGeometries[1], [m.section, m.honed, m.cast], liner, [0, .157, z]);
     const blockDeck = new THREE.Group(); this.block.add(blockDeck); blockDeck.position.z = z;
     const decks = [false, true].map(cut => {
       const deck = new THREE.Group(); blockDeck.add(deck);
-      this.mesh(this.deckGeometries[Number(cut)], [m.aluminum, cut ? m.cut : m.cast], deck, [0, GEOMETRY.deckY - .009, 0]);
+      this.mesh(this.deckGeometries[Number(cut)], [m.aluminum, cut ? m.section : m.cast], deck, [0, GEOMETRY.deckY - .009, 0]);
       for (const x of cut ? [-.057] : [-.057, .057]) {
         this.ring(.0038, .0058, .0013, m.turned, deck, [x, GEOMETRY.deckY + .0002, .041], 'y');
         this.ring(.0035, .0048, .001, m.darkSteel, deck, [x, GEOMETRY.deckY - .0004, -.023], 'y');
@@ -463,10 +472,29 @@ export class EngineScene {
     for (let k = 0; k < 6; k++) { const a = k / 6 * TAU; this.cylinder(.0035, .005, m.polished, this.flywheelRotor, [.029 * Math.cos(a), .029 * Math.sin(a), .272], 'z', 6); }
   }
 
+  radialTexture(stops, size) {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = size;
+    const context = canvas.getContext('2d'), midpoint = size / 2;
+    const gradient = context.createRadialGradient(midpoint, midpoint, 0, midpoint, midpoint, midpoint);
+    for (const [offset, color] of stops) gradient.addColorStop(offset, color);
+    context.fillStyle = gradient; context.fillRect(0, 0, size, size);
+    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+    this.textures.add(texture);
+    return texture;
+  }
+
   buildStage() {
     this.stage = new THREE.Group(); this.scene.add(this.stage);
-    const material = this.material({ color: '#141e27', metalness: .04, roughness: .85 });
-    this.floor = this.mesh(new THREE.PlaneGeometry(12, 12), material, this.stage, [0, -.133, 0]); this.floor.rotation.x = -Math.PI / 2; this.floor.castShadow = false;
+    const floorY = -.133;
+    const floorMap = this.radialTexture([[0, '#293945'], [.13, '#1c2a35'], [.31, '#101820'], [1, '#101820']], 512);
+    const material = this.material({ map: floorMap, metalness: .04, roughness: .88 });
+    this.floor = this.mesh(new THREE.PlaneGeometry(12, 12), material, this.stage, [0, floorY, 0]); this.floor.rotation.x = -Math.PI / 2; this.floor.castShadow = false;
+    const shadowMap = this.radialTexture([[0, '#03070bde'], [.52, '#03070bc8'], [.7, '#03070b86'], [.85, '#03070b34'], [1, '#03070b00']], 256);
+    const shadowMaterial = new THREE.MeshBasicMaterial({ map: shadowMap, transparent: true, depthWrite: false, toneMapped: false });
+    this.materials.add(shadowMaterial);
+    const contact = this.mesh(new THREE.PlaneGeometry(1.12, 1.12), shadowMaterial, this.stage, [0, floorY + .0005, 0]);
+    contact.rotation.x = -Math.PI / 2;
+    contact.receiveShadow = false;
     const platform = this.mesh(new THREE.CylinderGeometry(.37, .385, .017, 96), this.material({ color: '#2b3b45', metalness: .65, roughness: .47 }), this.stage, [0, -.122, 0]); platform.receiveShadow = true;
     this.ring(.361, .363, .0008, this.mat.darkSteel, this.stage, [0, -.113, 0], 'y');
     this.standFeet = [];
@@ -551,18 +579,21 @@ export class EngineScene {
             if (!showRoute) continue;
             const progress = (sample.phaseRad / Math.PI * 2 + index / markers.length) % 1;
             marker.position.copy(route.getPointAt(kind === 'intake' ? progress : 1 - progress));
-            marker.material.opacity = .2 + .43 * Math.sqrt(lift / GEOMETRY.valveMaxLift);
+            marker.material.opacity = .38 + .50 * Math.sqrt(clamp(lift / GEOMETRY.valveMaxLift, 0, 1));
           }
         }
       }
       cylinder.spark.position.y = exploded * .035;
-      const stroke = STROKES[sample.stroke] || STROKES.power; cylinder.gas.material.color.setHex(stroke[1]); cylinder.gas.material.emissive.setHex(stroke[1]);
+      const stroke = STROKES[sample.stroke] || STROKES.power;
+      const powerStroke = sample.stroke === 'power';
+      cylinder.gas.material.color.setHex(stroke[1]);
+      cylinder.gas.material.emissive.setHex(powerStroke ? 0xff862f : stroke[1]);
       const crown = pin.y + GEOMETRY.pinToCrown, height = CHAMBER_ROOF - crown;
       cylinder.gas.position.set(0, crown + height / 2, cylinder.z); cylinder.gas.scale.y = height; cylinder.gas.visible = showChamber;
-      const heat = sample.stroke === 'power' ? Math.exp(-sample.phaseRad * 1.3) : 0;
-      cylinder.gas.material.opacity = (isObserved ? .065 : .026) + heat * (isObserved ? .18 : .08);
-      cylinder.gas.material.emissiveIntensity = .06 + heat * .55;
-      const spark = sample.stroke === 'power' ? Math.max(0, 1 - sample.phaseRad / .13) : 0;
+      const heat = powerStroke ? Math.exp(-sample.phaseRad * 1.3) : 0;
+      cylinder.gas.material.opacity = (isObserved ? .09 : .026) + heat * (isObserved ? .26 : .08);
+      cylinder.gas.material.emissiveIntensity = .12 + heat * (isObserved ? 1.25 : .55);
+      const spark = powerStroke ? Math.max(0, 1 - sample.phaseRad / .13) : 0;
       cylinder.flash.visible = showChamber && spark > 0;
       cylinder.flash.material.opacity = spark * .64;
       cylinder.flash.scale.setScalar(.45 + spark * .55);
@@ -690,29 +721,34 @@ export class EngineScene {
   }
   isVisible(node) { for (let current = node; current; current = current.parent) if (!current.visible) return false; return true; }
   renderLabels() {
-    const width = this.width, height = this.height, candidates = [], single = this.view.cylinderMode === 'single';
+    const { width, height, compactLabels } = this, candidates = [];
     for (const component of this.components.values()) {
-      const entry = this.labels.get(component.id); entry.button.hidden = true; entry.line.style.display = 'none';
+      const selected = component.id === this.view.selectedPart;
+      if (compactLabels && !selected) continue;
       if (!this.view.labels || !this.isVisible(component.node)) continue;
       if (this.inspection) {
         const inspected = this.components.get(this.inspection.partId).node;
         let ancestor = component.node; while (ancestor && ancestor !== inspected) ancestor = ancestor.parent;
         if (!ancestor) continue; // Transform-only parents do not label hidden parts.
       }
-      const selected = component.id === this.view.selectedPart;
       if (component.cylinder && component.cylinder !== this.view.selectedCylinder && !selected) continue;
       if (!selected && component.priority > (width < 650 ? 4 : 8)) continue;
       const point = component.node.localToWorld(component.anchor.clone()).project(this.camera);
       if (point.z > 1 || point.z < -1 || Math.abs(point.x) > 1.25 || Math.abs(point.y) > 1.25) continue;
       candidates.push({ id: component.id, x: (point.x * .5 + .5) * width, y: (-point.y * .5 + .5) * height, priority: component.priority, selected });
     }
-    for (const placement of layoutLabels(candidates, width, height)) {
-      const { button, line } = this.labels.get(placement.id); button.hidden = false; button.style.left = `${placement.left}px`; button.style.top = `${placement.top}px`; button.style.width = `${placement.width}px`; button.setAttribute('aria-pressed', String(placement.selected));
-      line.style.display = ''; line.setAttribute('points', `${placement.edgeX},${placement.edgeY} ${placement.x},${placement.y}`); line.classList.toggle('selected', placement.selected);
+    const placements = new Map(layoutLabels(candidates, width, height, compactLabels).map(placement => [placement.id, placement]));
+    for (const [id, { button, line }] of this.labels) {
+      const placement = placements.get(id);
+      button.hidden = !placement; line.style.display = placement ? '' : 'none';
+      if (!placement) continue;
+      button.style.left = `${placement.left}px`; button.style.top = `${placement.top}px`; button.style.width = `${placement.width}px`; button.setAttribute('aria-pressed', String(placement.selected));
+      line.setAttribute('points', `${placement.edgeX},${placement.edgeY} ${placement.x},${placement.y}`); line.classList.toggle('selected', placement.selected);
     }
   }
   pick(event) {
-    if (!this.down || Math.hypot(event.clientX - this.down.x, event.clientY - this.down.y) > 5) return;
+    const down = this.down; this.down = null;
+    if (!down || event.pointerId !== down.id || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5) return;
     const rect = this.renderer.domElement.getBoundingClientRect(); this.pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
     this.raycaster.setFromCamera(this.pointer, this.camera);
     for (const hit of this.raycaster.intersectObject(this.root, true)) {
@@ -722,6 +758,8 @@ export class EngineScene {
   }
   resize() {
     this.width = Math.max(1, this.container.clientWidth); this.height = Math.max(1, this.container.clientHeight || 500);
+    this.compactLabels = this.width < COMPACT_SCENE_WIDTH;
+    this.container.classList.toggle('compact-labels', this.compactLabels);
     this.renderer.setSize(this.width, this.height, false); this.camera.aspect = this.width / this.height; this.camera.updateProjectionMatrix(); this.needsRender = true;
   }
   setCameraPreset(id = 'iso') {
@@ -770,7 +808,8 @@ export class EngineScene {
   }
   dispose() {
     if (this.disposed) return; this.disposed = true; cancelAnimationFrame(this.frame); this.resizeObserver.disconnect();
-    this.renderer.domElement.removeEventListener('pointerdown', this.pointerDown); this.renderer.domElement.removeEventListener('pointerup', this.pointerUp); this.controls.dispose();
+    this.renderer.domElement.removeEventListener('pointerdown', this.pointerDown); this.renderer.domElement.removeEventListener('pointerup', this.pointerUp);
+    this.renderer.domElement.removeEventListener('pointercancel', this.pointerCancel); this.controls.dispose();
     for (const { material } of this.highlighted) for (const entry of material) entry.dispose();
     this.root.traverse(node => { if (node.isInstancedMesh) node.dispose(); });
     for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose();

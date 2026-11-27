@@ -2,7 +2,16 @@
 <html lang="ko">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#121b24"><title>Engine Lab · 엔진의 안쪽을 보다</title></head>
 <body>
-  <header class="app-header"><a class="brand" href="#main"><span class="brand-mark">E</span><span>ENGINE LAB<small>4행정 · DOHC 구조 관찰</small></span></a><span class="version">1.1 · ENGINE ANATOMY</span><nav aria-label="실험 파일"><button id="save-project">실험 저장</button><button id="open-project">불러오기</button><button id="help" aria-label="사용 안내">?</button></nav></header>
+  <header class="app-header">
+    <a class="brand" href="#main"><span class="brand-mark">E</span><span>ENGINE LAB<small>4행정 · DOHC 구조 관찰</small></span></a>
+    <span class="version">1.1 · ENGINE ANATOMY</span>
+    <nav aria-label="실험 파일">
+      <button id="new-project" type="button" aria-label="새 실험"><span class="file-action-wide">새 실험</span><span class="file-action-compact">새로</span></button>
+      <button id="save-project" type="button" aria-label="실험 저장"><span class="file-action-wide">실험 저장</span><span class="file-action-compact">저장</span></button>
+      <button id="open-project" type="button" aria-label="실험 열기"><span class="file-action-wide">불러오기</span><span class="file-action-compact">열기</span></button>
+      <button id="help" type="button" aria-label="사용 안내"><span class="file-action-wide">?</span><span class="file-action-compact">안내</span></button>
+    </nav>
+  </header>
 <aside id="autosave-recovery" class="recovery" aria-labelledby="autosave-title" hidden><div><strong id="autosave-title"></strong><p id="autosave-hint"></p></div><button id="export-unsaved-project" type="button">이 탭의 실험 내려받기</button></aside>
 <aside id="tab-draft-recovery" class="recovery" aria-labelledby="tab-draft-title" hidden><div role="status"><strong id="tab-draft-title">이 탭에서 남긴 임시 실험이 있습니다.</strong><p>자동 저장을 덮어쓰지 않았습니다. 임시 실험이 필요하면 별도 파일로 내려받으세요.</p></div><button id="export-interrupted-draft" type="button">이전 임시 실험 내려받기</button></aside>
   <main id="main" class="layout">
@@ -30,7 +39,15 @@
     <section class="workbench" aria-label="엔진 관찰">
       <div class="scene-toolbar panel"><div class="segmented" aria-label="구조 보기"><button data-mode="assembled">조립</button><button data-mode="cutaway" aria-pressed="true">절개</button><button data-mode="exploded">분해</button></div><label class="explode-control">분해 간격 <input id="explode" type="range" min="0" max="1" step="0.01" value="0.35" disabled></label><label class="check"><input id="labels" type="checkbox" checked>이름표</label><button id="focus-view">크게 보기</button></div>
       <section id="focus-detail-panel" class="focus-detail-panel panel" aria-label="확대 화면 부품 관찰"><div class="focus-detail-heading"><label>부품 살펴보기 <select id="focus-part-select"></select></label><button id="focus-inspect-part" class="inspect-button" aria-pressed="false">선택 부품 자세히 보기</button></div><details id="focus-component-details" class="focus-component-details"><summary>이 부품의 현재 계산값 <span id="focus-detail-reference" class="detail-reference"></span></summary><dl id="focus-detail-facts" class="detail-facts"></dl><p id="focus-detail-note" class="detail-note"></p></details></section>
-      <div class="scene-wrap panel"><div id="scene" tabindex="0" aria-label="엔진 3D 장면. 드래그로 회전하고 휠로 확대할 수 있습니다."></div><div class="scene-note"><span class="live-dot"></span><span id="scene-caption">1번 실린더 · 팽창 행정</span></div><div class="scene-footer"><div class="segmented"><button id="restore-inspection" hidden>전체 구조</button><button data-camera="iso">입체</button><button data-camera="front">정면</button><button data-camera="timing">체인 쪽</button></div><span>드래그 · 회전 / 휠 · 확대</span></div></div>
+      <div class="scene-wrap panel">
+        <div id="scene" tabindex="0" aria-label="엔진 3D 장면. 드래그로 회전하고 휠이나 두 손가락으로 확대할 수 있습니다."></div>
+        <div class="scene-note"><span class="live-dot"></span><span id="scene-caption">1번 실린더 · 팽창 행정</span></div>
+        <div class="scene-footer">
+          <div class="segmented"><button id="restore-inspection" hidden>전체 구조</button><button data-camera="iso">입체</button><button data-camera="front">정면</button><button data-camera="timing">체인 쪽</button></div>
+          <select id="scene-part-select" aria-label="장면에서 부품 선택"></select>
+          <span>드래그 · 회전 / 휠 · 확대</span>
+        </div>
+      </div>
       <section class="timeline panel" aria-label="엔진 사이클">
         <div class="play-row"><button class="play" id="play" aria-label="재생">▶ 재생</button><button id="step">10° 진행</button><div class="angle-readout"><strong id="angle-value">0°</strong><span>크랭크 · 1번 기준 / 720°</span></div><div class="cam-readout"><strong id="cam-angle">0°</strong><span>배기 캠 / 360°</span></div><button id="reset-angle" class="text-button">크랭크 0°</button></div>
         <input id="angle" aria-label="1번 실린더 기준 크랭크 각도" type="range" min="0" max="720" step="1" value="0">

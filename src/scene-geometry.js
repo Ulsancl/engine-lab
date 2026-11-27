@@ -149,7 +149,13 @@ export function timingPath() {
   } };
 }
 
-export function layoutLabels(candidates, width, height) {
+export function layoutLabels(candidates, width, height, compact = false) {
+  if (compact) {
+    const selected = candidates.find(item => item.selected);
+    if (!selected) return [];
+    const labelWidth = Math.min(176, width - 24), top = height - 86;
+    return [{ ...selected, width: labelWidth, left: 12, top, edgeX: 12 + labelWidth / 2, edgeY: top }];
+  }
   const labelWidth = Math.min(width < 600 ? 110 : 132, width * .27);
   const top = 80, bottom = Math.max(top, height - 60), gap = 32;
   const capacity = Math.max(1, Math.floor((bottom - top) / gap));
