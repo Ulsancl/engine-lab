@@ -202,7 +202,8 @@ function syncControls() {
   $$('[data-mode]').forEach(button => button.setAttribute('aria-pressed', button.dataset.mode === view.mode));
   $$('[data-cylinder-mode]').forEach(button => button.setAttribute('aria-pressed', button.dataset.cylinderMode === view.cylinderMode));
   $$('[data-layer]').forEach(input => { input.checked = view.layers[input.dataset.layer]; });
-  if ($('#part-select').querySelector(`option[value="${CSS.escape(view.selectedPart)}"]`)) $('#part-select').value = view.selectedPart;
+  $('#part-select').value = view.selectedPart;
+  $('#scene-part-select').value = view.selectedPart;
   syncPlayback();
 }
 function refresh(force = false) {
@@ -313,8 +314,10 @@ function stepSimulation(realSeconds) {
 
 try {
   scene = new EngineScene($('#scene'), { onSelect: selectPart });
-  for (const part of scene.getComponents()) {
-    const option = document.createElement('option'); option.value = part.id; option.textContent = part.name; $('#part-select').append(option); $('#focus-part-select').append(option.cloneNode(true));
+  const parts = scene.getComponents();
+  for (const picker of $$('#part-select, #focus-part-select, #scene-part-select')) {
+    picker.append(...parts.map(part => new Option(part.name, part.id)));
+    picker.addEventListener('change', event => selectPart(event.target.value));
   }
   $('#cylinder-timeline').innerHTML = [1, 2, 3, 4].map(id => `<div class="cylinder-row"><button data-cylinder-row="${id}">${id}번</button><div class="cycle-track"><i class="cycle-marker" id="marker-${id}"></i></div><span id="stroke-${id}"></span></div>`).join('');
   syncControls(); refresh(true);
@@ -361,7 +364,6 @@ try {
   $$('[data-layer]').forEach(input => input.addEventListener('change', () => { view.layers[input.dataset.layer] = input.checked; refresh(true); scheduleSave(); }));
   $('#explode').addEventListener('input', event => { view.explode = Number(event.target.value); refresh(true); scheduleSave(); });
   $('#labels').addEventListener('change', event => { view.labels = event.target.checked; refresh(true); scheduleSave(); });
-  $('#part-select').addEventListener('change', event => selectPart(event.target.value));
   $('#focus-view').addEventListener('click', () => focusView());
   const inspectSelected = () => {
     const inspection = scene.getInspectionState?.();
@@ -371,9 +373,9 @@ try {
   };
   $('#inspect-part').addEventListener('click', inspectSelected); $('#focus-inspect-part').addEventListener('click', inspectSelected);
   $('#restore-inspection').addEventListener('click', () => { scene.restoreInspection(); refresh(true); });
-  $('#focus-part-select').addEventListener('change', event => selectPart(event.target.value));
   $('#piston-metric').addEventListener('change', () => refresh(true));
   $('#piston-chart').addEventListener('click', event => setAngle(phaseFromChartClick(event) + FIRING_PHASES[view.selectedCylinder - 1]));
+  $('#new-project').addEventListener('click', reset);
   $('#save-project').addEventListener('click', saveFile); $('#open-project').addEventListener('click', openFile);
   $('#undo-new').addEventListener('click', () => {
     if (!previousExperiment) return;

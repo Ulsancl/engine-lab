@@ -45,7 +45,68 @@ try {
     const scene = await page.evaluate(() => window.engineLab.sceneDebug());
     assert(scene.drawCalls > 0); assert(scene.triangles > 0);
     assert.equal(await page.locator('#explode').isDisabled(), true);
+    assert((await page.locator('.engine-part-label:visible').count()) > 1);
+    assert(await page.locator('#scene-part-select').isHidden());
     await page.screenshot({ path: path.join(output, 'engine-cutaway.png'), fullPage: true });
+  });
+  await check('500px touch layout keeps only the selected callout and exposes all file actions', async () => {
+    const mobile = await browser.newContext({ viewport: { width: 500, height: 900 }, isMobile: true, hasTouch: true, acceptDownloads: true });
+    try {
+      const tab = await mobile.newPage();
+      await tab.goto('http://127.0.0.1:5198/');
+      await tab.waitForFunction(() => window.engineLab?.sceneDebug().drawCalls > 0);
+      const actions = tab.getByRole('navigation', { name: '실험 파일' });
+      const newProject = actions.getByRole('button', { name: '새 실험' });
+      const save = actions.getByRole('button', { name: '실험 저장' });
+      const open = actions.getByRole('button', { name: '실험 열기' });
+      const help = actions.getByRole('button', { name: '사용 안내' });
+      for (const button of [newProject, save, open, help]) {
+        const box = await button.boundingBox();
+        assert(box.width >= 44 && box.height >= 44 && box.x + box.width <= 500);
+      }
+      assert.equal(await tab.evaluate(() => document.documentElement.scrollWidth), 500);
+      await newProject.focus();
+      for (const id of ['save-project', 'open-project', 'help']) {
+        await tab.keyboard.press('Tab');
+        assert.equal(await tab.evaluate(() => document.activeElement.id), id);
+      }
+      await tab.keyboard.press('Enter');
+      assert(await tab.locator('#help-dialog').isVisible());
+      await tab.keyboard.press('Escape');
+
+      const labels = tab.locator('.engine-part-label:visible');
+      const picker = tab.getByRole('combobox', { name: '장면에서 부품 선택' });
+      await picker.selectOption('c4-piston');
+      await labels.getByText('4번 피스톤', { exact: true }).waitFor();
+      assert.deepEqual(await labels.allTextContents(), ['4번 피스톤']);
+      await tab.locator('[data-camera="timing"]').tap();
+      await picker.selectOption('timing-chain');
+      await labels.getByText('타이밍 체인 · 2:1 구동').tap();
+      assert.deepEqual(await labels.allTextContents(), ['타이밍 체인 · 2:1 구동']);
+      await tab.locator('#labels').uncheck();
+      await labels.first().waitFor({ state: 'hidden' });
+      assert.equal(await picker.inputValue(), 'timing-chain');
+      await tab.locator('#labels').check();
+      await labels.getByText('타이밍 체인 · 2:1 구동').waitFor();
+
+      const expected = await tab.evaluate(() => window.engineLab.project());
+      const downloadEvent = tab.waitForEvent('download');
+      await save.tap();
+      const exported = await downloadEvent;
+      const filename = path.join(output, 'mobile-observation.engine.json');
+      await exported.saveAs(filename);
+      assert.deepEqual(JSON.parse(await fs.readFile(filename, 'utf8')), expected);
+      await newProject.tap();
+      assert.equal(await picker.inputValue(), 'c1-piston');
+      await tab.locator('#undo-new').tap();
+      assert.deepEqual(await tab.evaluate(() => window.engineLab.project()), expected);
+      await newProject.tap();
+      const fileChooser = tab.waitForEvent('filechooser');
+      await open.tap();
+      await (await fileChooser).setFiles(filename);
+      await tab.waitForFunction(() => window.engineLab.getState().view.selectedPart === 'timing-chain');
+      assert.deepEqual(await tab.evaluate(() => window.engineLab.project()), expected);
+    } finally { await mobile.close(); }
   });
   await check('guided eight-second cycle retains elapsed time across delayed frames and the two-to-one cam ratio', async () => {
     await page.locator('#one-cycle').click();
