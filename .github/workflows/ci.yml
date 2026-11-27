@@ -36,11 +36,11 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked dependencies and runtimes
         run: |
-          npm ci
+          npm ci --ignore-scripts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node node_modules/electron/install.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npx --no-install playwright install chromium
+          node node_modules/playwright/cli.js install chromium
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify model, geometry and experiment data
         run: npm test
@@ -65,7 +65,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify installer checksum and required documents
         run: |
-          $taskVersion = (Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json).version
+          $taskPackage = Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json
+          $taskVersion = $taskPackage.version
+          $taskNotices = Get-Content -Raw -LiteralPath 'docs/THIRD-PARTY-NOTICES.md'
+          foreach ($taskVersionNotice in @($taskPackage.dependencies.three, $taskPackage.devDependencies.electron, $taskPackage.devDependencies.vite, $taskPackage.devDependencies.playwright, $taskPackage.devDependencies.'electron-builder')) {
+            if (-not $taskNotices.Contains("**${taskVersionNotice}**")) { throw "Missing dependency version in notice: $taskVersionNotice" }
+          }
+          if (-not $taskNotices.Contains("Engine Lab $taskVersion")) { throw "Missing product version in notice: $taskVersion" }
           $taskInstaller = "release/windows/Engine-Lab-Setup-$taskVersion.exe"
           $taskSidecar = Get-Content -Raw -LiteralPath "$taskInstaller.sha256"
           $taskEntry = [regex]::Match($taskSidecar, '\A(?<sha>[0-9a-f]{64})  (?<name>[^\r\n]+)\n\z')

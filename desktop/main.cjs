@@ -2,16 +2,18 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell, scr
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { readProjectFile, writeProjectFile } = require('./project-files.cjs');
+const { maxProjectBytes } = require('../src/project-limits.json');
+const contentSecurityPolicy = require('./content-security-policy.cjs');
 
 const APP_URL = 'app://engine/';
 const APP_NAME = 'Engine Lab';
 const APP_ID = 'local.enginelab.workbench';
-const MAX_PROJECT_BYTES = 10 * 1024 * 1024;
+const MAX_RECOVERY_BYTES = 10 * 1024 * 1024;
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8' };
-let mainWindow, calculationBusy = false, nativeBusy = 0, closePrompt = false;
-const downloads = new Set();
+let mainWindow, nativeBusy = false, closePrompt = false;
 
 app.setName(APP_NAME);
 app.setAppUserModelId(APP_ID);
@@ -32,28 +34,12 @@ function trustedURL(value) {
   catch { return false; }
 }
 function trustedSender(event) {
-  if (!mainWindow || event.sender !== mainWindow.webContents || !trustedURL(event.senderFrame?.url)) {
+  if (!mainWindow || event.sender !== mainWindow.webContents
+    || event.senderFrame !== mainWindow.webContents.mainFrame || !trustedURL(event.senderFrame?.url)) {
     throw new Error('Invalid application sender');
   }
 }
 function command(value) { mainWindow?.webContents.send('engine:command', value); }
-function safeFileName(value) {
-  let name = path.basename(typeof value === 'string' ? value : '엔진 실험.engine.json')
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').slice(0, 160);
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `engine-${name}`;
-  return name || '엔진 실험.engine.json';
-}
-function jsonText(contents) {
-  if (typeof contents !== 'string' || Buffer.byteLength(contents, 'utf8') > MAX_PROJECT_BYTES) {
-    throw new Error('실험 파일은 10 MiB 이하인 JSON 텍스트여야 합니다.');
-  }
-  try {
-    const parsed = JSON.parse(contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
-  } catch { throw new Error('JSON 실험 파일을 읽을 수 없습니다. 원본 파일은 변경하지 않습니다.'); }
-  return contents;
-}
-
 async function serveBundle(request) {
   if (!trustedURL(request.url)) return new Response('Not found', { status: 404 });
   if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed', { status: 405 });
@@ -73,54 +59,49 @@ async function serveBundle(request) {
     return new Response(request.method === 'HEAD' ? null : data, { headers: {
       'Content-Type': mime[path.extname(actual)] || 'application/octet-stream',
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      'Content-Security-Policy': `${contentSecurityPolicy}; frame-ancestors 'none'`,
     } });
   } catch { return new Response('Not found', { status: 404 }); }
 }
 
+async function fileAction(event, action) {
+  trustedSender(event);
+  if (nativeBusy) return { canceled: true };
+  nativeBusy = true;
+  try { return await action(); } finally { nativeBusy = false; }
+}
+
+async function saveDocument(contents, { name, title, filter, extension, maxBytes }) {
+  if (typeof contents !== 'string' || contents.length > maxBytes || Buffer.byteLength(contents, 'utf8') > maxBytes) {
+    throw new Error('저장할 텍스트의 형식 또는 크기가 허용 범위를 벗어났습니다.');
+  }
+  if (extension === 'json') {
+    try {
+      const parsed = JSON.parse(contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+    } catch { throw new Error('JSON 실험 파일을 읽을 수 없습니다.'); }
+  }
+  const result = await dialog.showSaveDialog(mainWindow, { title,
+    defaultPath: path.join(app.getPath('documents'), name), filters: [{ name: filter, extensions: [extension] }] });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  if (path.extname(result.filePath).toLowerCase() !== '.' + extension) throw new Error('허용된 파일 확장자를 선택해 주세요.');
+  await writeProjectFile(result.filePath, contents);
+  return { canceled: false };
+}
+
 function registerFileActions() {
-  ipcMain.on('engine:busy', (event, busy) => {
-    try { trustedSender(event); calculationBusy = busy === true; } catch { /* Ignore unrelated frames. */ }
-  });
-  ipcMain.handle('engine:open-project', async event => {
-    trustedSender(event);
-    if (nativeBusy) return { canceled: true };
-    nativeBusy++;
-    try {
-      const result = await dialog.showOpenDialog(mainWindow, { title: '엔진 실험 열기',
-        properties: ['openFile'], filters: [{ name: '엔진 실험 JSON', extensions: ['json'] }] });
-      if (result.canceled || !result.filePaths[0]) return { canceled: true };
-      const target = result.filePaths[0], stat = await fsp.stat(target);
-      if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('실험 파일은 10 MiB 이하인 JSON 파일이어야 합니다.');
-      const bytes = await fsp.readFile(target);
-      if (bytes.byteLength > MAX_PROJECT_BYTES) throw new Error('실험 파일은 10 MiB 이하여야 합니다.');
-      return { canceled: false, content: jsonText(bytes.toString('utf8')), path: target };
-    } finally { nativeBusy--; }
-  });
-  ipcMain.handle('engine:save-project', async (event, payload) => {
-    trustedSender(event);
-    if (nativeBusy) return { canceled: true };
-    if (!payload || typeof payload !== 'object') throw new Error('실험 파일 내용을 확인해 주세요.');
-    const contents = jsonText(payload.contents);
-    nativeBusy++;
-    let temporary;
-    try {
-      const result = await dialog.showSaveDialog(mainWindow, { title: '엔진 실험 저장',
-        defaultPath: path.join(app.getPath('documents'), safeFileName(payload.name)),
-        filters: [{ name: '엔진 실험 JSON', extensions: ['json'] }] });
-      if (result.canceled || !result.filePath) return { canceled: true };
-      temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`;
-      const handle = await fsp.open(temporary, 'wx');
-      try { await handle.writeFile(contents, 'utf8'); await handle.sync(); } finally { await handle.close(); }
-      // Rename a complete sibling file; never delete the previous destination first.
-      await fsp.rename(temporary, result.filePath);
-      temporary = null;
-      return { canceled: false, path: result.filePath };
-    } finally {
-      if (temporary) await fsp.unlink(temporary).catch(() => {});
-      nativeBusy--;
-    }
-  });
+  ipcMain.handle('engine:open-project', event => fileAction(event, async () => {
+    const result = await dialog.showOpenDialog(mainWindow, { title: '엔진 실험 열기',
+      properties: ['openFile'], filters: [{ name: '엔진 실험 JSON', extensions: ['json'] }] });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+    return { canceled: false, content: await readProjectFile(result.filePaths[0]) };
+  }));
+  ipcMain.handle('engine:save-project', (event, contents) => fileAction(event, () => saveDocument(contents, {
+    name: '엔진 관찰.engine.json', title: '엔진 실험 저장', filter: '엔진 실험 JSON', extension: 'json', maxBytes: maxProjectBytes,
+  })));
+  ipcMain.handle('engine:save-recovery', (event, contents) => fileAction(event, () => saveDocument(contents, {
+    name: '엔진-저장원문.txt', title: '저장 원문 보관', filter: '텍스트', extension: 'txt', maxBytes: MAX_RECOVERY_BYTES,
+  })));
 }
 
 function createMenu() {
@@ -193,12 +174,15 @@ function createWindow() {
   mainWindow = new BrowserWindow({ ...preferredBounds, title: APP_NAME, show: false,
     backgroundColor: '#101820', icon: path.join(__dirname, 'assets', 'app.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true,
-      sandbox: true, nodeIntegration: false, webSecurity: true },
+      sandbox: true, nodeIntegration: false, webSecurity: true, webviewTag: false },
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  mainWindow.webContents.on('will-navigate', (event, url) => { if (!trustedURL(url)) event.preventDefault(); });
+  const denyNavigation = event => event.preventDefault();
+  for (const name of ['will-navigate', 'will-frame-navigate', 'will-redirect', 'will-attach-webview']) {
+    mainWindow.webContents.on(name, denyNavigation);
+  }
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    calculationBusy = false; log(`Renderer ended: ${details.reason}`);
+    log(`Renderer ended: ${details.reason}`);
     dialog.showMessageBox(mainWindow, { type: 'error', title: APP_NAME, message: '화면을 계속 표시하지 못했습니다.',
       detail: '저장된 관찰 설정은 유지됩니다. 프로그램을 다시 시작해 주세요.', buttons: ['확인'] });
   });
@@ -215,7 +199,7 @@ function createWindow() {
     if (saved.maximized === true) mainWindow.maximize();
   });
   mainWindow.on('close', event => {
-    if (calculationBusy || nativeBusy || downloads.size) {
+    if (nativeBusy) {
       event.preventDefault(); if (closePrompt) return; closePrompt = true;
       dialog.showMessageBox(mainWindow, { type: 'warning', title: '작업 진행 중',
         message: '자료 처리 또는 파일 작업이 진행 중입니다.', detail: '작업이 끝난 후 창을 닫아 주세요.',
@@ -238,16 +222,12 @@ else {
   } });
   app.whenReady().then(async () => {
     protocol.handle('app', serveBundle);
-    session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] },
-      (_details, callback) => callback({ cancel: true }));
+    session.defaultSession.webRequest.onBeforeRequest(({ url }, callback) => {
+      callback({ cancel: !trustedURL(url) && !url.startsWith('data:') });
+    });
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
-    session.defaultSession.on('will-download', (_event, item, contents) => {
-      if (!mainWindow || contents !== mainWindow.webContents) { item.cancel(); return; }
-      downloads.add(item);
-      item.setSaveDialogOptions({ title: '결과 파일 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(item.getFilename())) });
-      item.once('done', () => downloads.delete(item));
-    });
+    session.defaultSession.on('will-download', event => event.preventDefault());
     registerFileActions(); createWindow(); log(`Started ${app.getVersion()}`);
   }).catch(error => { log(`Startup failed: ${error.stack}`);
     dialog.showErrorBox(APP_NAME, `프로그램을 시작하지 못했습니다.\n${error.message}`); app.quit(); });

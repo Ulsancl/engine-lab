@@ -7,7 +7,7 @@ import { renderKinematicsChart, phaseFromChartClick } from './kinematics-chart.j
 import './style.css';
 import { GEOMETRY, FIRING_PHASES, INTAKE_PROFILE, normalizeSettings, sampleEngine, advanceAngle, valveLift, valveTiming } from './model.js';
 import { EngineScene } from './scene.js';
-import { DEFAULT_VIEW, normalizeView, normalizePlaybackRate, createProject, parseProject, serializeProject } from './project.js';
+import { MAX_PROJECT_BYTES, DEFAULT_VIEW, normalizeView, normalizePlaybackRate, createProject, parseProject, serializeProject } from './project.js';
 
 const $ = selector => document.querySelector(selector), $$ = selector => [...document.querySelectorAll(selector)];
 const TAU = Math.PI * 2, CYCLE = TAU * 2, RAD = Math.PI / 180;
@@ -140,9 +140,7 @@ function syncPlayback() {
   $('#one-cycle').classList.toggle('active', guidedRemaining !== null);
 }
 function setAngle(value) { stop(); angleRad = ((value % CYCLE) + CYCLE) % CYCLE; refresh(true); scheduleSave(); }
-function readProject(project) {
-  // Validate the complete replacement before touching the current experiment.
-  const validated = parseProject(serializeProject(project));
+function readProject(validated) {
   stop(); scene?.restoreInspection?.(); settings = validated.settings;
   ({ angleRad, playbackRate, view } = validated.observation);
   syncControls(); refresh(true);
@@ -271,19 +269,19 @@ function setIntakeConditions(changes) {
   syncControls(); refresh(true); scheduleSave();
 }
 
-async function downloadText(text, name) {
-  if (desktop) return desktop.saveProject({ contents: text, name });
-  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+function downloadText(text, name, type = 'application/json') {
+  const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return { canceled: false };
 }
 async function saveFile() {
   try {
     const contents = currentProjectText();
-    const result = await downloadText(contents, '엔진 관찰.engine.json');
-    if (!result.canceled) {
-      browserAutosave?.markExported(contents);
-      toast('현재 설정·각도·시점을 파일로 저장했습니다.');
+    if (desktop) {
+      const result = await desktop.saveProject(contents);
+      if (!result.canceled) toast('현재 설정·각도·시점을 파일로 저장했습니다.');
+    } else {
+      downloadText(contents, '엔진 관찰.engine.json');
+      toast('실험 파일 내려받기를 요청했습니다. 브라우저에서 완료 여부를 확인하세요.');
     }
   } catch (error) { toast(`저장하지 못했습니다. ${error.message}`); }
 }
@@ -385,7 +383,7 @@ try {
   $('#help').addEventListener('click', () => $('#help-dialog').showModal()); $('#close-help').addEventListener('click', () => $('#help-dialog').close());
   $('#file-input').addEventListener('change', async event => {
     const file = event.target.files?.[0]; if (!file) return;
-    try { if (file.size > 10 * 1024 * 1024) throw new Error('실험 파일은 10 MiB 이하여야 합니다.'); importText(await file.text()); }
+    try { if (file.size > MAX_PROJECT_BYTES) throw new Error('실험 파일은 256 KiB 이하여야 합니다.'); importText(await file.text()); }
     catch (error) { toast(`불러오지 못했습니다. 현재 관찰은 유지합니다. ${error.message}`); }
   });
   $('#export-unsaved-project').addEventListener('click', saveFile);
@@ -393,11 +391,9 @@ try {
     if (recoveredRaw === null) return;
     try {
       if (desktop) {
-        // Native JSON validation deliberately rejects corrupt JSON. Preserve arbitrary
-        // recovery text through the browser download path, whose filename remains local.
-        const url = URL.createObjectURL(new Blob([recoveredRaw], { type: 'text/plain' }));
-        const a = document.createElement('a'); a.href = url; a.download = '엔진-저장원문.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      } else await downloadText(recoveredRaw, '엔진-저장원문.txt');
+        const result = await desktop.saveRecovery(recoveredRaw);
+        if (!result.canceled) toast('저장 원문을 파일로 보관했습니다.');
+      } else downloadText(recoveredRaw, '엔진-저장원문.txt', 'text/plain');
     } catch (error) { toast(`원문을 보관하지 못했습니다. ${error.message}`); }
   });
   $('#dismiss-recovery').addEventListener('click', () => {

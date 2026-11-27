@@ -1,9 +1,10 @@
+import limits from './project-limits.json' with { type: 'json' };
 import { INTAKE_PROFILE, MODEL_VERSION, normalizeSettings } from './model.js';
 
 export const projectType = 'engine-lab-project';
 export const projectVersion = 1;
 export const projectModelVersion = MODEL_VERSION;
-const MAX_BYTES = 10 * 1024 * 1024;
+export const MAX_PROJECT_BYTES = limits.maxProjectBytes;
 const CYCLE = 4 * Math.PI;
 const DEFAULT_RATE = .025;
 const CAMERA_DISTANCE_EPSILON = 1e-10;
@@ -147,7 +148,7 @@ export function createProject(input = {}) {
 
 export function parseProject(text) {
   if (typeof text !== 'string') fail('실험 파일은 JSON 텍스트여야 합니다.', 'INVALID_JSON');
-  if (text.length > MAX_BYTES || new TextEncoder().encode(text).byteLength > MAX_BYTES) fail('실험 파일은 10 MiB 이하여야 합니다.', 'PROJECT_TOO_LARGE');
+  if (text.length > MAX_PROJECT_BYTES || new TextEncoder().encode(text).byteLength > MAX_PROJECT_BYTES) fail('실험 파일은 256 KiB 이하여야 합니다.', 'PROJECT_TOO_LARGE');
   let value;
   // Windows text editors may prefix UTF-8 JSON with one byte-order mark.
   // Ignore it for parsing only; callers keep the untouched original for recovery.

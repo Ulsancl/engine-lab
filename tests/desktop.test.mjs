@@ -5,13 +5,22 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { _electron as electron } from 'playwright';
+import { _electron as electron, chromium } from 'playwright';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { flipFuses, FuseV1Options, FuseVersion, getCurrentFuseWire } from '@electron/fuses';
+import { MAX_PROJECT_BYTES } from '../src/project.js';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedVersion = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
-const packaged = !!process.env.ENGINE_DESKTOP_EXE;
-const executablePath = packaged ? process.env.ENGINE_DESKTOP_EXE : require('electron');
+const packagedExecutable = process.env.ENGINE_DESKTOP_EXE;
+const packaged = Boolean(packagedExecutable);
+// Hosted Windows machines have no physical GPU. Select the OpenGL ES driver
+// explicitly so packaged checks do not depend on the VM's default D3D shader compiler.
+const renderingArgs = packaged && process.env.GITHUB_ACTIONS === 'true' && process.platform === 'win32'
+  ? ['--use-gl=angle', '--use-angle=swiftshader'] : [];
+let executablePath = packagedExecutable || require('electron');
 assert.ok(path.isAbsolute(executablePath), 'The tested executable must be an absolute path');
 const output = artifactDirectory(root, path.join(root, 'output', `${packaged ? 'desktop-packaged' : 'desktop'}-v${expectedVersion}`));
 await fs.mkdir(output, { recursive: true });
@@ -22,7 +31,7 @@ const env = { ...process.env, ENGINE_LAB_DATA_DIR: profile };
 delete env.ELECTRON_RUN_AS_NODE;
 const projectPath = path.join(evidence, '엔진 관찰.engine.json');
 const checks = [], errors = [], remoteRequests = [], processes = [];
-let app, page, saved, windowRestoration, realtimeGuide, gpu, failure;
+let app, page, saved, windowRestoration, realtimeGuide, gpu, failure, instrumented;
 const state = () => page.evaluate(() => window.engineLab.getState());
 const project = () => page.evaluate(() => window.engineLab.project());
 
@@ -48,8 +57,58 @@ function sameProject(actual, expected) {
     assert.equal(a.zoom ?? 1, b.zoom ?? 1);
   }
 }
+async function verifyProductionExecutable() {
+  // @electron/fuses returns the ASCII fuse states '0' (off) and '1' (on).
+  const wire = await getCurrentFuseWire(packagedExecutable);
+  for (const [name, enabled] of Object.entries({
+    RunAsNode: false, EnableNodeOptionsEnvironmentVariable: false, EnableNodeCliInspectArguments: false,
+    EnableEmbeddedAsarIntegrityValidation: true, OnlyLoadAppFromAsar: true,
+    LoadBrowserProcessSpecificV8Snapshot: false, GrantFileProtocolExtraPrivileges: false,
+  })) {
+    assert.equal(wire[FuseV1Options[name]], (enabled ? '1' : '0').charCodeAt(0), name);
+  }
+  const smokeProfile = path.join(output, 'production-smoke-profile');
+  const child = spawn(packagedExecutable, [...renderingArgs, '--remote-debugging-port=0', '--enable-logging=stderr'], {
+    env: { ...env, ENGINE_LAB_DATA_DIR: smokeProfile }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  });
+  let logs = '', browser;
+  const exited = once(child, 'exit');
+  exited.catch(() => {});
+  for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { logs = (logs + chunk).slice(-20000); });
+  try {
+    const matchEndpoint = () => /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[^\s]+)/.exec(logs);
+    await waitFor(() => {
+      if (child.exitCode !== null) throw new Error('Hardened executable exited during startup: ' + logs);
+      return matchEndpoint();
+    }, 'hardened executable Chromium endpoint', 30000);
+    browser = await chromium.connectOverCDP(matchEndpoint()[1]);
+    const context = browser.contexts()[0];
+    await waitFor(() => context.pages().some(tab => tab.url() === 'app://engine/'), 'hardened executable application page');
+    const tab = context.pages().find(tab => tab.url() === 'app://engine/');
+    await tab.waitForFunction(() => window.engineLab?.sceneDebug().triangles > 0, undefined, { timeout: 30000 });
+    assert.equal(await tab.evaluate(() => window.engineLab.project().settings.rpm), 1200);
+    await tab.close({ runBeforeUnload: true });
+    await waitFor(() => child.exitCode !== null, 'hardened executable normal exit');
+    assert.equal(child.exitCode, 0);
+  } finally {
+    try { await browser?.close(); } finally {
+      if (child.exitCode === null) child.kill();
+      await exited;
+    }
+  }
+}
+
+async function prepareInstrumentedExecutable() {
+  // Playwright's native-dialog mocks need Node inspection. Keep the tested
+  // production executable intact; change only this disposable copy.
+  instrumented = path.join(output, 'instrumented');
+  await fs.cp(path.dirname(packagedExecutable), instrumented, { recursive: true, errorOnExist: true, force: false });
+  executablePath = path.join(instrumented, path.basename(packagedExecutable));
+  await flipFuses(executablePath, { version: FuseVersion.V1, [FuseV1Options.EnableNodeCliInspectArguments]: true });
+}
+
 async function launch() {
-  app = await electron.launch({ executablePath, args: packaged ? [] : [root], env, timeout: 45000 });
+  app = await electron.launch({ executablePath, args: packaged ? renderingArgs : [root], env, timeout: 45000 });
   const child = app.process(), processRecord = { pid: child.pid, exited: false };
   processes.push(processRecord);
   child.once('exit', (code, signal) => Object.assign(processRecord, { exited: true, code, signal }));
@@ -62,7 +121,19 @@ async function launch() {
   await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setTitle('Engine Lab · 자동 검사'); window.focus(); });
 }
 async function closeNormally() {
-  await app.close(); app = null; page = null;
+  const current = app;
+  let timeout;
+  try {
+    await Promise.race([current.close(), new Promise((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error('Timed out: native app did not close normally')), 15000);
+    })]);
+  } catch (error) {
+    current.process().kill();
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    app = null; page = null;
+  }
   await waitFor(() => processes.at(-1).exited, 'normal native process exit');
   assert.equal(processes.at(-1).code, 0); assert.equal(processes.at(-1).signal, null);
 }
@@ -103,6 +174,7 @@ async function stableBounds(label) {
 }
 
 try {
+  if (packaged) await prepareInstrumentedExecutable();
   await launch();
   await check('isolated Engine Lab identity, offline bundle, sandbox and native bridge', async () => {
     assert.equal(page.url(), 'app://engine/');
@@ -115,7 +187,7 @@ try {
       sandbox: true, contextIsolation: true, nodeIntegration: false });
     const bridge = await page.evaluate(() => ({ keys: Object.keys(window.engineDesktop).sort(), native: window.engineDesktop.isDesktop,
       node: typeof window.require, process: typeof window.process, brake: typeof window.brakeDesktop }));
-    assert.deepEqual(bridge, { keys: ['isDesktop', 'onCommand', 'openProject', 'saveProject', 'setBusy'],
+    assert.deepEqual(bridge, { keys: ['isDesktop', 'onCommand', 'openProject', 'saveProject', 'saveRecovery'],
       native: true, node: 'undefined', process: 'undefined', brake: 'undefined' });
     assert.deepEqual(errors, []); assert.deepEqual(remoteRequests, []);
     const access = await page.evaluate(async () => ({
@@ -154,14 +226,20 @@ try {
     assert.ok(Math.abs((await state()).angleRad - ((paused + Math.PI / 18) % (4 * Math.PI))) < 1e-12);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].focus());
     assert.equal(await page.evaluate(() => document.hidden), false);
-    const startedAt = performance.now();
+    // Measure from the renderer's actual click. Playwright can wait for
+    // actionability before dispatching the event on a busy software renderer.
+    await page.locator('#one-cycle').evaluate(button => {
+      button.addEventListener('click', () => { window.engineCycleTestStart = performance.now(); },
+        { capture: true, once: true });
+    });
     await page.locator('#one-cycle').click();
     realtimeGuide = { requestedCycleSeconds: 8, scope: 'One visible foreground observation on this machine; not a general performance guarantee', samples: [] };
     await waitFor(async () => (await state()).running, 'guided cycle starts');
     let sampleAtTwoSeconds = false;
     await waitFor(async () => {
-      const observed = await page.evaluate(() => ({ ...window.engineLab.getState(), hidden: document.hidden }));
-      const elapsedMs = performance.now() - startedAt;
+      const observed = await page.evaluate(() => ({ ...window.engineLab.getState(), hidden: document.hidden,
+        elapsedMs: performance.now() - window.engineCycleTestStart }));
+      const { elapsedMs } = observed;
       assert.equal(observed.hidden, false, 'The native guided observation was hidden and paused');
       if (!sampleAtTwoSeconds && elapsedMs >= 2000) {
         realtimeGuide.samples.push({ elapsedMs, angleRad: observed.angleRad, running: observed.running, hidden: observed.hidden });
@@ -252,7 +330,7 @@ try {
       ['broken.json', '{synthetic invalid JSON\r\n원문'],
       ['future.json', JSON.stringify({ ...saved, schemaVersion: 2 })],
       ['future-model.json', JSON.stringify({ ...saved, modelVersion: 'engine-kinematics-2' })],
-      ['too-large.json', ' '.repeat(10 * 1024 * 1024 + 1)],
+      ['too-large.json', ' '.repeat(MAX_PROJECT_BYTES + 1)],
     ]) {
       const file = path.join(evidence, name); await fs.writeFile(file, raw);
       await openDialog(file);
@@ -347,20 +425,22 @@ try {
     await page.reload();
     await page.waitForFunction(() => window.engineLab?.project && !document.querySelector('#storage-recovery').hidden);
     const target = path.join(evidence, 'recovered-original.txt');
-    await app.evaluate(({ session }, filename) => {
-      globalThis.engineDownload = null;
-      session.defaultSession.once('will-download', (_event, item) => {
-        item.setSavePath(filename); item.once('done', (_event, status) => { globalThis.engineDownload = status; });
-      });
-    }, target);
+    await saveDialog(target, true);
     await page.locator('#recover-original').click();
-    await waitFor(() => app.evaluate(() => globalThis.engineDownload === 'completed'), 'native original download');
+    await waitFor(() => app.evaluate(() => globalThis.engineSaveCalls === 1), 'canceled recovery dialog');
+    await assert.rejects(fs.access(target), { code: 'ENOENT' });
+    await saveDialog(target);
+    await freshToast(() => page.locator('#recover-original').click(), '저장 원문을 파일로 보관했습니다');
     assert.equal(await fs.readFile(target, 'utf8'), raw);
     assert.ok(await page.evaluate(value => Object.keys(localStorage).some(key => key.startsWith('engine-lab-project-v1-original-') && localStorage.getItem(key) === value), raw));
   });
   await check('all native workflows finish without application errors or external content', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(remoteRequests, []);
   });
+  if (packaged) {
+    await closeNormally();
+    await check('unmodified packaged executable enforces Electron fuse settings and renders the app', verifyProductionExecutable);
+  }
 } catch (error) {
   failure = error; process.exitCode = 1;
   const diagnostic = page ? await page.evaluate(() => ({ toast: document.querySelector('#toast')?.textContent, state: window.engineLab?.getState() })).catch(() => null) : null;
@@ -370,11 +450,11 @@ try {
 } finally {
   if (app) {
     await app.evaluate(() => { globalThis.engineResolveSave?.({ canceled: true }); }).catch(() => {});
-    await page?.evaluate(() => window.engineDesktop?.setBusy(false)).catch(() => {});
     await closeNormally().catch(error => { failure ??= error; process.exitCode = 1; });
   }
+  if (instrumented) await fs.rm(instrumented, { recursive: true, force: true, maxRetries: 4 });
   await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ status: failure ? 'FAILED' : 'PASSED', version: expectedVersion,
-    packaged, executablePath, profile, evidence, checks, errors, remoteRequests, processes, windowRestoration, realtimeGuide, gpu,
+    packaged, executablePath: packagedExecutable || executablePath, profile, evidence, checks, errors, remoteRequests, processes, windowRestoration, realtimeGuide, gpu,
     ...(failure ? { failure: failure.message } : {}) }, null, 2));
   console.log(`Desktop validation: ${checks.length} checks ${failure ? 'completed before failure' : 'passed'}.`);
 }

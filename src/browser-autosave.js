@@ -44,7 +44,7 @@ export function clearTabDraft(storage, key, contents) {
 }
 
 export function createBrowserAutosave({ key, storage, locks, expected, baseline, capture, onStatus }) {
-  let clean = baseline, exported;
+  let clean = baseline;
   let enabled = supportsAutosaveLock(locks), queued = false, active = null;
   async function drain() {
     while (queued && enabled) {
@@ -86,12 +86,11 @@ export function createBrowserAutosave({ key, storage, locks, expected, baseline,
   }
   function unsavedDraft() {
     const contents = capture();
-    return contents === clean || contents === exported ? null : { expected, contents, interrupted: !enabled };
+    return contents === clean ? null : { expected, contents, interrupted: !enabled };
   }
   return {
     canSave: () => enabled,
     flush,
-    markExported(contents) { exported = contents; },
     unsavedDraft,
     hasUnsavedChanges: () => unsavedDraft() !== null,
   };

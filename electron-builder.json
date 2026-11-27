@@ -3,10 +3,19 @@
   "productName": "Engine Lab",
   "copyright": "Engine Lab",
   "asar": true,
+  "electronFuses": {
+    "runAsNode": false,
+    "enableNodeOptionsEnvironmentVariable": false,
+    "enableNodeCliInspectArguments": false,
+    "enableEmbeddedAsarIntegrityValidation": true,
+    "onlyLoadAppFromAsar": true,
+    "loadBrowserProcessSpecificV8Snapshot": false,
+    "grantFileProtocolExtraPrivileges": false
+  },
   "publish": null,
   "electronDist": "node_modules/electron/dist",
   "directories": { "output": "release/windows", "buildResources": "desktop/assets" },
-  "files": ["desktop/**/*.cjs", "desktop/assets/app.ico", "dist/**/*", "package.json"],
+  "files": ["desktop/**/*.cjs", "desktop/assets/app.ico", "dist/**/*", "src/project-limits.json", "package.json"],
   "extraResources": [
     { "from": "LICENSE.txt", "to": "LICENSE.txt" },
     { "from": "docs", "to": "docs", "filter": ["*.md"] },

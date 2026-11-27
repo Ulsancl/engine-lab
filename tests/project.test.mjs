@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createProject, parseProject, serializeProject, DEFAULT_VIEW,
+import { createProject, parseProject, serializeProject, DEFAULT_VIEW, MAX_PROJECT_BYTES,
   normalizeView, normalizePlaybackRate, ProjectError } from '../src/project.js';
 
 function configured() {
@@ -149,10 +149,10 @@ test('scene camera distance and zoom endpoints retain floating point values with
 
 test('JSON syntax, type and UTF-8 byte limits are validated before reading a project', () => {
   for (const text of [null, {}, 'null', '[]', '{broken']) assert.throws(() => parseProject(text), ProjectError);
-  const oversizedUtf8 = ' '.repeat(1) + JSON.stringify({ note: '가'.repeat(3_500_000) });
-  assert.ok(oversizedUtf8.length < 10 * 1024 * 1024);
+  const oversizedUtf8 = ' '.repeat(1) + JSON.stringify({ note: '가'.repeat(Math.ceil(MAX_PROJECT_BYTES / 3)) });
+  assert.ok(oversizedUtf8.length < MAX_PROJECT_BYTES);
   assert.throws(() => parseProject(oversizedUtf8), error => error.code === 'PROJECT_TOO_LARGE');
-  assert.throws(() => parseProject(' '.repeat(10 * 1024 * 1024 + 1)), error => error.code === 'PROJECT_TOO_LARGE');
+  assert.throws(() => parseProject(' '.repeat(MAX_PROJECT_BYTES + 1)), error => error.code === 'PROJECT_TOO_LARGE');
 });
 
 test('playback normalization supports guided 15 rpm observation and finite limits', () => {

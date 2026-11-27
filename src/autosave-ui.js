@@ -30,8 +30,9 @@ export function readBrowserDraft({ key, locks, expected, allowResume, decode }) 
     writeTabDraft(draftStorage, key, { ...draft, interrupted: true });
     return { ...empty, interrupted: draft.contents };
   } catch {
-    clearTabDraft(draftStorage, key, draft.contents);
-    return empty;
+    // Keep older, unsupported or unreadable drafts available as original bytes.
+    writeTabDraft(draftStorage, key, { ...draft, interrupted: true });
+    return { ...empty, interrupted: draft.contents };
   }
 }
 
@@ -85,13 +86,16 @@ export function createAutosaveUI({ key, locks, expected, baseline, capture, stat
     document.querySelector('#export-interrupted-draft').addEventListener('click', async () => {
       if (protectedDraft === null) return;
       try {
-        const contents = protectedDraft;
-        await downloadDraft(contents);
-        clearTabDraft(draftStorage, key, contents);
-        protectedDraft = null;
-        archive.hidden = true;
-        if (guardArmed) rememberDraft();
+        await downloadDraft(protectedDraft);
+        archive.querySelector('p').textContent = '내려받기가 끝났는지 확인한 뒤 임시 기록을 지울 수 있습니다.';
       } catch { report('failed'); }
+    });
+    document.querySelector('#forget-interrupted-draft').addEventListener('click', () => {
+      if (protectedDraft === null) return;
+      clearTabDraft(draftStorage, key, protectedDraft);
+      protectedDraft = null;
+      archive.hidden = true;
+      if (guardArmed) rememberDraft();
     });
   }
   return {
@@ -106,12 +110,6 @@ export function createAutosaveUI({ key, locks, expected, baseline, capture, stat
       flush();
     },
     flushIfDirty() { if (guardArmed) flush(); },
-    markExported(contents) {
-      // Track the experiment snapshot offered to the browser; download may be canceled.
-      autosave.markExported(contents);
-      if (protectedDraft === null) clearTabDraft(draftStorage, key);
-      disarm();
-    },
     report,
   };
 }
