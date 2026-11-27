@@ -54,29 +54,29 @@ export function valveGeometry(kind, cylinderZ = 0, pair = 1) {
   return { n, seat, center, alpha: Math.atan2(-n[1], -n[0]) };
 }
 
-export function camOutline(kind, segments = 720) {
+export function camOutline(kind, segments = 720, settings) {
   const points = [];
   for (let index = 0; index < segments; index++) {
     const phi = index / segments * Math.PI * 2;
-    const { h, dh } = camSupport(kind, phi);
+    const { h, dh } = camSupport(kind, phi, settings);
     points.push([h * Math.cos(phi) - dh * Math.sin(phi), h * Math.sin(phi) + dh * Math.cos(phi)]);
   }
   return points;
 }
 
-export function camContact(kind, camAngle, cylinderIndex = 0, cylinderZ = 0, pair = 1) {
+export function camContact(kind, camAngle, cylinderIndex = 0, cylinderZ = 0, pair = 1, settings) {
   const valve = valveGeometry(kind, cylinderZ, pair);
   const phi = camAngle - FIRING_PHASES[cylinderIndex] / 2;
   const rotation = valve.alpha - camAngle + FIRING_PHASES[cylinderIndex] / 2;
-  const { h, dh, ddh } = camSupport(kind, phi);
+  const { h, dh, ddh } = camSupport(kind, phi, settings);
   const local = [h * Math.cos(phi) - dh * Math.sin(phi), h * Math.sin(phi) + dh * Math.cos(phi)];
   const point = [valve.center[0] + local[0] * Math.cos(rotation) - local[1] * Math.sin(rotation), valve.center[1] + local[0] * Math.sin(rotation) + local[1] * Math.cos(rotation), valve.center[2]];
   const followerFace = valve.center.map((value, index) => value - valve.n[index] * h);
   return { ...valve, phi, rotation, h, dh, ddh, point, followerFace, lift: h - SCENE_DIMENSIONS.camBaseRadius };
 }
 
-export function createCamGeometry(kind) {
-  const points = camOutline(kind);
+export function createCamGeometry(kind, settings) {
+  const points = camOutline(kind, 720, settings);
   const shape = new THREE.Shape(points.map(([x, y]) => new THREE.Vector2(x, y)));
   const geometry = new THREE.ExtrudeGeometry(shape, { depth: SCENE_DIMENSIONS.camLobeWidth, bevelEnabled: false, steps: 1 });
   geometry.translate(0, 0, -SCENE_DIMENSIONS.camLobeWidth / 2);

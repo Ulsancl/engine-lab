@@ -1,4 +1,4 @@
-import { MODEL_VERSION, normalizeSettings } from './model.js';
+import { INTAKE_PROFILE, MODEL_VERSION, normalizeSettings } from './model.js';
 
 export const projectType = 'engine-lab-project';
 export const projectVersion = 1;
@@ -95,13 +95,17 @@ function savedCamera(value) {
 }
 
 function savedSettings(value) {
-  shape(value, ['rpm', 'intakeAdvanceRad'], '운동 조건');
+  // Version 1 records may omit the profile overrides and use the original intake cam.
+  shape(value, ['rpm', 'intakeAdvanceRad'], '운동 조건', ['intakeDurationRad', 'intakeMaxLiftM']);
   for (const key of ['rpm', 'intakeAdvanceRad']) if (!finite(value[key])) fail('운동 조건은 유한한 수치여야 합니다.');
+  const { durationRad, maxLiftM } = INTAKE_PROFILE;
+  if (Object.hasOwn(value, 'intakeDurationRad')) numeric(value.intakeDurationRad, '흡기 밸브 개방 기간(라디안)', durationRad.min, durationRad.max);
+  if (Object.hasOwn(value, 'intakeMaxLiftM')) numeric(value.intakeMaxLiftM, '흡기 밸브 최대 리프트(미터)', maxLiftM.min, maxLiftM.max);
   const normalized = normalizeSettings(value);
   if (normalized.rpm !== value.rpm || normalized.intakeAdvanceRad !== value.intakeAdvanceRad) {
     fail('운동 조건이 지원 범위를 벗어났습니다. 각도 단위는 라디안입니다.');
   }
-  return { rpm: normalized.rpm, intakeAdvanceRad: normalized.intakeAdvanceRad };
+  return normalized;
 }
 
 function validateProject(value) {
@@ -137,7 +141,7 @@ export function createProject(input = {}) {
     try { camera = savedCamera(value.camera); } catch (error) { if (!(error instanceof ProjectError)) throw error; }
   }
   return { type: projectType, schemaVersion: projectVersion, modelVersion: projectModelVersion,
-    settings: { rpm: settings.rpm, intakeAdvanceRad: settings.intakeAdvanceRad },
+    settings,
     observation: { angleRad, playbackRate: normalizePlaybackRate(value.playbackRate), view: normalizeView(value.view), camera } };
 }
 

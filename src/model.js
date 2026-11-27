@@ -10,7 +10,12 @@ export const GEOMETRY = Object.freeze({
 
 export const FIRING_PHASES = Object.freeze([0, 3 * Math.PI, Math.PI, 2 * Math.PI]);
 const CYCLE = 4 * Math.PI;
+const RAD = Math.PI / 180;
 const ADVANCE_LIMIT = 10 * Math.PI / 180;
+export const INTAKE_PROFILE = Object.freeze({
+  durationRad: Object.freeze({ min: 220 * RAD, default: 230 * RAD, max: 260 * RAD }),
+  maxLiftM: Object.freeze({ min: .004, default: GEOMETRY.valveMaxLift, max: GEOMETRY.valveMaxLift }),
+});
 const VALVE_EVENTS = Object.freeze({
   intake: Object.freeze({ open: 350 * Math.PI / 180, close: 580 * Math.PI / 180 }),
   exhaust: Object.freeze({ open: 140 * Math.PI / 180, close: 370 * Math.PI / 180 }),
@@ -29,18 +34,31 @@ function wrapCycle(angle) {
 
 export function normalizeSettings(settings = {}) {
   const value = settings && typeof settings === 'object' ? settings : {};
+  const { durationRad, maxLiftM } = INTAKE_PROFILE;
+  const intakeDurationRad = clamp(finite(value.intakeDurationRad, durationRad.default), durationRad.min, durationRad.max);
+  const intakeMaxLiftM = clamp(finite(value.intakeMaxLiftM, maxLiftM.default), maxLiftM.min, maxLiftM.max);
+  // Omit default profile overrides so unchanged profiles still use the original settings shape.
   return {
     rpm: clamp(finite(value.rpm, 1200), 100, 6000),
     intakeAdvanceRad: clamp(finite(value.intakeAdvanceRad, 0), -ADVANCE_LIMIT, ADVANCE_LIMIT),
+    ...(intakeDurationRad !== durationRad.default ? { intakeDurationRad } : {}),
+    ...(intakeMaxLiftM !== maxLiftM.default ? { intakeMaxLiftM } : {}),
   };
+}
+
+function intakeEvent(settings) {
+  const duration = settings.intakeDurationRad ?? INTAKE_PROFILE.durationRad.default;
+  const halfChange = (duration - INTAKE_PROFILE.durationRad.default) / 2;
+  return { open: VALVE_EVENTS.intake.open - halfChange, close: VALVE_EVENTS.intake.close + halfChange };
 }
 
 // Event boundaries in crank radians for the selected cylinder's 720° cycle.
 export function valveTiming(settings = {}) {
-  const { intakeAdvanceRad } = normalizeSettings(settings);
+  const normalized = normalizeSettings(settings);
+  const { open, close } = intakeEvent(normalized);
   const intake = {
-    open: VALVE_EVENTS.intake.open - intakeAdvanceRad,
-    close: VALVE_EVENTS.intake.close - intakeAdvanceRad,
+    open: open - normalized.intakeAdvanceRad,
+    close: close - normalized.intakeAdvanceRad,
   };
   const exhaust = { ...VALVE_EVENTS.exhaust };
   return {
@@ -49,9 +67,9 @@ export function valveTiming(settings = {}) {
   };
 }
 
-function liftTerms(phaseRad, kind, intakeAdvanceRad = 0) {
+function liftTerms(phaseRad, kind, settings, intakeAdvanceRad = settings.intakeAdvanceRad) {
   if (kind !== 'intake' && kind !== 'exhaust') throw new RangeError(`Unknown valve kind: ${String(kind)}`);
-  const event = VALVE_EVENTS[kind];
+  const event = kind === 'intake' ? intakeEvent(settings) : VALVE_EVENTS.exhaust;
   const phase = wrapCycle(wrapCycle(phaseRad) + (kind === 'intake' ? intakeAdvanceRad : 0));
   // Arithmetic such as (350° - advance) + advance can differ by a few ULPs.
   const endpointTolerance = 8 * Number.EPSILON * CYCLE;
@@ -60,7 +78,7 @@ function liftTerms(phaseRad, kind, intakeAdvanceRad = 0) {
   }
   const duration = event.close - event.open;
   const u = Math.PI * (phase - event.open) / duration;
-  const amplitude = GEOMETRY.valveMaxLift;
+  const amplitude = kind === 'intake' ? settings.intakeMaxLiftM ?? INTAKE_PROFILE.maxLiftM.default : GEOMETRY.valveMaxLift;
   return {
     lift: amplitude * Math.sin(u) ** 2,
     derivative: amplitude * Math.PI / duration * Math.sin(2 * u),
@@ -69,26 +87,26 @@ function liftTerms(phaseRad, kind, intakeAdvanceRad = 0) {
 }
 
 export function valveLift(phaseRad, kind, settings = {}) {
-  return liftTerms(phaseRad, kind, normalizeSettings(settings).intakeAdvanceRad).lift;
+  return liftTerms(phaseRad, kind, normalizeSettings(settings)).lift;
 }
 
 // Derivative with respect to crank angle, in metres per crank radian.
 export function valveLiftDerivative(phaseRad, kind, settings = {}) {
-  return liftTerms(phaseRad, kind, normalizeSettings(settings).intakeAdvanceRad).derivative;
+  return liftTerms(phaseRad, kind, normalizeSettings(settings)).derivative;
 }
 
 // Piecewise derivative with respect to crank angle (m/rad²). At an event
 // boundary this returns the closed-branch convention, not a two-sided limit.
 export function valveLiftSecondDerivative(phaseRad, kind, settings = {}) {
-  return liftTerms(phaseRad, kind, normalizeSettings(settings).intakeAdvanceRad).secondDerivative;
+  return liftTerms(phaseRad, kind, normalizeSettings(settings)).secondDerivative;
 }
 
-// Fixed basic lobe support function. The scene applies advance through camAngles.
+// Lobe support function before phase advance, which the scene applies through camAngles.
 // phi is a cam-profile angle: d(2 phi)/d phi = 2.
-export function camSupport(kind, phi) {
+export function camSupport(kind, phi, settings = {}) {
   // Reduce before multiplying so even very large finite inputs stay finite.
   const camPhase = wrapCycle(phi) % (2 * Math.PI);
-  const { lift, derivative, secondDerivative } = liftTerms(2 * camPhase, kind);
+  const { lift, derivative, secondDerivative } = liftTerms(2 * camPhase, kind, normalizeSettings(settings), 0);
   return {
     h: GEOMETRY.camBaseRadius + lift,
     dh: 2 * derivative,
@@ -120,8 +138,8 @@ export function sampleEngine(angleRad, settings = {}) {
         // Standard positive rotation about +Z for a rod initially along +Y.
         rodAngleRad: Math.atan2(crankPin.x, verticalRodSpan),
         valveLifts: {
-          intake: valveLift(phaseRad, 'intake', normalized),
-          exhaust: valveLift(phaseRad, 'exhaust', normalized),
+          intake: liftTerms(phaseRad, 'intake', normalized).lift,
+          exhaust: liftTerms(phaseRad, 'exhaust', normalized).lift,
         },
       };
     }),
