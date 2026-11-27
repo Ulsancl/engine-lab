@@ -81,11 +81,14 @@ async function verifyProductionExecutable() {
     const context = browser.contexts()[0];
     await waitFor(() => context.pages().some(tab => tab.url() === 'app://engine/'), 'hardened executable application page');
     const tab = context.pages().find(tab => tab.url() === 'app://engine/');
-    await tab.waitForFunction(() => window.engineLab?.project && document.querySelector('#scene canvas'), undefined, { timeout: 30000 });
+    await tab.waitForFunction(() => window.engineLab?.sceneDebug().triangles > 0, undefined, { timeout: 30000 });
     assert.equal(await tab.evaluate(() => window.engineLab.project().settings.rpm), 1200);
+    await tab.close({ runBeforeUnload: true });
+    await waitFor(() => child.exitCode !== null, 'hardened executable normal exit');
+    assert.equal(child.exitCode, 0);
   } finally {
     try { await browser?.close(); } finally {
-      child.kill();
+      if (child.exitCode === null) child.kill();
       await exited;
     }
   }
@@ -155,10 +158,7 @@ async function stableBounds(label) {
 }
 
 try {
-  if (packaged) {
-    await check('unmodified packaged executable enforces Electron fuse settings and renders the app', verifyProductionExecutable);
-    await prepareInstrumentedExecutable();
-  }
+  if (packaged) await prepareInstrumentedExecutable();
   await launch();
   await check('isolated Engine Lab identity, offline bundle, sandbox and native bridge', async () => {
     assert.equal(page.url(), 'app://engine/');
@@ -416,6 +416,10 @@ try {
   await check('all native workflows finish without application errors or external content', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(remoteRequests, []);
   });
+  if (packaged) {
+    await closeNormally();
+    await check('unmodified packaged executable enforces Electron fuse settings and renders the app', verifyProductionExecutable);
+  }
 } catch (error) {
   failure = error; process.exitCode = 1;
   const diagnostic = page ? await page.evaluate(() => ({ toast: document.querySelector('#toast')?.textContent, state: window.engineLab?.getState() })).catch(() => null) : null;
